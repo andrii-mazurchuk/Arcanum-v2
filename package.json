@@ -1,0 +1,24 @@
+{
+  "name": "arcanum",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": "1.3.14"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test",
+    "service": "bun src/app/bin.ts service",
+    "release-check": "bun src/app/bin.ts release-check",
+    "check:bun": "bun src/release/pinned-bun.ts",
+    "image-check": "bun tools/image-check/run.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "^5.9.0"
+  }
+}

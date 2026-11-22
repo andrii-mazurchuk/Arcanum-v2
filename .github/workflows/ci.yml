@@ -1,0 +1,29 @@
+# CI (S-240): frozen install from the lockfile, then the no-emit type-check, then the test suite,
+# each stopping the run on failure, on the one pinned Bun.
+# Not triggered on pull_request: main is red by design while test units land failing suites ahead
+# of the code, so the PR gate is tests.yml (the bun test ratchet) and path-guard.yml.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bun test
