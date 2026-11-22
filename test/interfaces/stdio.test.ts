@@ -23,6 +23,19 @@ const within = (p: Promise<unknown>, ms: number): Promise<Settled> =>
     Bun.sleep(ms).then(() => 'pending' as const),
   ]);
 
+// Resolves 'resolved' if p resolves within ms, 'rejected' if it rejects, else 'pending'.
+const resolvesWithin = (
+  p: Promise<unknown>,
+  ms: number,
+): Promise<'pending' | 'resolved' | 'rejected'> =>
+  Promise.race([
+    p.then(
+      () => 'resolved' as const,
+      () => 'rejected' as const,
+    ),
+    Bun.sleep(ms).then(() => 'pending' as const),
+  ]);
+
 const waitUntil = async (cond: () => boolean, ms = 1000): Promise<void> => {
   const deadline = Date.now() + ms;
   while (!cond()) {
@@ -109,7 +122,7 @@ describe('interfaces/assistant-transport', () => {
     expect(drained).toBe(false);
 
     work.resolve();
-    expect(await within(io.drain(), 1000)).toBe('settled');
+    expect(await resolvesWithin(io.drain(), 1000)).toBe('resolved');
     await waitUntil(() => drained);
     expect(drained).toBe(true);
   });
@@ -117,7 +130,7 @@ describe('interfaces/assistant-transport', () => {
   test('only tool calls are tracked', async () => {
     // No message at all: drain resolves at once.
     const none = await open();
-    expect(await within(none.io.drain(), 50)).toBe('settled');
+    expect(await resolvesWithin(none.io.drain(), 50)).toBe('resolved');
 
     // A tools/list request creates no record, though no response is ever sent for it.
     const list = await open();
@@ -125,7 +138,7 @@ describe('interfaces/assistant-transport', () => {
     await waitUntil(() => list.received.length === 1);
     list.stdin.end();
     await list.io.inputEnded;
-    expect(await within(list.io.drain(), 50)).toBe('settled');
+    expect(await resolvesWithin(list.io.drain(), 50)).toBe('resolved');
 
     // Contrast: a tools/call with no response keeps drain pending.
     const call = await open();
@@ -152,7 +165,7 @@ describe('interfaces/assistant-transport', () => {
     // The cancelled call counts as ended, with no response ever sent for id 3.
     stdin.end();
     await io.inputEnded;
-    expect(await within(io.drain(), 100)).toBe('settled');
+    expect(await resolvesWithin(io.drain(), 100)).toBe('resolved');
   });
 
   test('failed write rejects sent', async () => {
