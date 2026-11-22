@@ -56,6 +56,17 @@ def unit_issue(repo, key, token):
     for state in ("open", "all"):          # prefer open; fall back for a merged re-run
         issues = _gh("/repos/%s/issues?state=%s&labels=%s&per_page=100"
                      % (repo, state, urllib.request.quote(label)), token)
+        if not issues:
+            # A revised unit keeps its sidecar key (S-178-T) but is labelled with its new
+            # anchor (mu-spec:S-224): scan every issue of this kind and match the key.
+            issues, page = [], 1
+            while True:
+                batch = _gh("/repos/%s/issues?state=%s&labels=%s&per_page=100&page=%d"
+                            % (repo, state, urllib.request.quote("kind:%s" % kind), page), token)
+                issues += batch
+                if len(batch) < 100:
+                    break
+                page += 1
         for issue in issues:
             names = [l["name"] for l in issue.get("labels", [])]
             if "kind:%s" % kind not in names:
