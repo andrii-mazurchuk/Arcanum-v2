@@ -224,25 +224,23 @@ describe('sources/second/source', () => {
       holdingId: b.holdingId,
       balance: b.balance,
       creditLimit: b.creditLimit,
-      goal: b.goal ?? null,
-      order: b.order ?? null,
     });
     expect(r.balances.map(shape)).toEqual([
       {
         holdingId: narrowingName('second', 'account', 'sec-pln'),
         balance: { minor: 250001n, currency: 'PLN' },
         creditLimit: null,
-        goal: null,
-        order: null,
       },
       {
         holdingId: narrowingName('second', 'account', 'sec-eur'),
         balance: { minor: -10003n, currency: 'EUR' },
         creditLimit: null,
-        goal: null,
-        order: null,
       },
     ]);
+    for (const b of r.balances) {
+      expect('goal' in b).toBe(false);
+      expect('order' in b).toBe(false);
+    }
     expect(r.pushAddress).toBeUndefined();
 
     // A bad account refuses the whole listing; nothing is skipped or quarantined.
