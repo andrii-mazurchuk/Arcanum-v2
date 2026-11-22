@@ -6,7 +6,7 @@
 
 import type { Database } from 'bun:sqlite';
 import type { Instant, SourceId } from '../core/primitives';
-import type { Store } from '../db/index';
+import type { Store, WriteTx } from '../db/index';
 
 export const MIN_MARGIN_MS = 200;
 export type HttpFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -97,8 +97,8 @@ export function createRateGate(deps: RateGateDeps): RateGate {
     return decl;
   };
 
-  const cooldownOf = (db: Database, sourceId: SourceId): number => {
-    const row = db.query('SELECT until FROM rate_cooldown WHERE source_id = ?').get(sourceId) as {
+  const cooldownOf = (tx: WriteTx, sourceId: SourceId): number => {
+    const row = tx.db.query('SELECT until FROM rate_cooldown WHERE source_id = ?').get(sourceId) as {
       until: number;
     } | null;
     return row === null ? 0 : row.until;
@@ -111,7 +111,7 @@ export function createRateGate(deps: RateGateDeps): RateGate {
       const rows = tx.db
         .query('SELECT call_class, at FROM rate_reservation WHERE source_id = ? ORDER BY at, seq')
         .all(sourceId) as { call_class: string; at: number }[];
-      let t = Math.max(n, rows.length === 0 ? 0 : rows[rows.length - 1]!.at, cooldownOf(tx.db, sourceId));
+      let t = Math.max(n, rows.length === 0 ? 0 : rows[rows.length - 1]!.at, cooldownOf(tx, sourceId));
       let longest = 0;
       for (const w of decl.windows) {
         longest = Math.max(longest, w.windowMs);
@@ -151,7 +151,7 @@ export function createRateGate(deps: RateGateDeps): RateGate {
     recordRefusal(sourceId) {
       const decl = declOf(sourceId);
       store.write((tx) => {
-        const until = Math.max(cooldownOf(tx.db, sourceId), now() + decl.refusalCooldownMs);
+        const until = Math.max(cooldownOf(tx, sourceId), now() + decl.refusalCooldownMs);
         tx.db.run(
           'INSERT INTO rate_cooldown (source_id, until) VALUES (?, ?) ' +
             'ON CONFLICT (source_id) DO UPDATE SET until = excluded.until',
