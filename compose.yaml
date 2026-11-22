@@ -1,0 +1,19 @@
+# Container run definition (S-241): the background service with its store in one named volume,
+# Monobank settings passed from the host when set there (otherwise absent), and only the push
+# port published.
+services:
+  arcanum:
+    build: .
+    environment:
+      ARCANUM_STORAGE: /data/arcanum.db
+      ARCANUM_MONOBANK_TOKEN:
+      ARCANUM_MONOBANK_PUSH_URL:
+      ARCANUM_MONOBANK_PUSH_SECRET:
+    volumes:
+      - arcanum-data:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  arcanum-data:
