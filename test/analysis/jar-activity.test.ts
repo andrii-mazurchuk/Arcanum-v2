@@ -1,7 +1,7 @@
 // Jar activity (S-166): the jars in scope by the jars capability split, the one has-a-goal
 // predicate, per-jar and total top-ups over a span from the period ledger's jar lines (S-156), the
 // 3-month average window that never holds a partial month, the average monthly top-up and the
-// months-to-goal integer rule on exact jar-currency minor units. From src/analytics/jar-activity
+// months-to-goal integer rule on exact jar-currency minor units. From src/analysis/jar-activity
 // over the ledger of src/analytics/ledger and the held balances of src/sync/balances.
 //
 // The modules are imported inside each test, not at the top: a missing module then fails each
@@ -14,7 +14,7 @@ import type { QuestionContext } from '../../src/core/question';
 import type { Snapshot, WriteTx } from '../../src/db/index';
 import type { Money } from '../../src/money/money';
 
-const jarActivity = () => import('../../src/analytics/jar-activity');
+const jarActivity = () => import('../../src/analysis/jar-activity');
 const ledgerModule = () => import('../../src/analytics/ledger');
 const periods = () => import('../../src/analytics/periods');
 const jarsFamily = () => import('../../src/families/jars');
@@ -157,7 +157,7 @@ const ctxFor = (
 
 const figures = (t: any) => ({ count: t.count, sum: t.sum, shown: t.shown, notConverted: t.notConverted });
 
-describe('analytics/jar-activity', () => {
+describe('analysis/jar-activity', () => {
   test('jar activity: goal, months to goal, window', async () => {
     const { hasGoal, monthsToGoal, averageWindow } = await jarActivity();
     const { monthPeriod, currentMonth } = await periods();
