@@ -40,7 +40,7 @@ const NOW = Date.UTC(2026, 10, 21, 11);
 
 // S-134's Settings: no zone set, Monobank switched on.
 const settings = (): Settings => ({ timeZone: undefined, sources: ['monobank'] });
-const render = (a: unknown) => JSON.stringify(a);
+const render = (a: unknown) => JSON.stringify(a, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 
 // Write resolves at once; the channel never closes.
 const channel = () => ({
@@ -150,7 +150,7 @@ describe('app/starters lists', () => {
       for (const name of ANSWER_FAMILIES.map((f) => f.name)) {
         const r = await core.serve({ asker: 'command_line', family: name, options: {} }, render, channel());
         const a = r.answer;
-        expect(JSON.stringify(a)).not.toContain('no such table');
+        expect(render(a)).not.toContain('no such table');
         if (a.kind === 'envelope') {
           expect(a.family).toBe(name);
           expect(['answered', 'not_available']).toContain(a.outcome.kind);
