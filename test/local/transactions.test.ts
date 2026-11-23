@@ -1,7 +1,8 @@
 // Held transactions (S-141): the transaction and own-transfer tables; selectTransactions with its
-// holding, instant and position bounds, both orders and limit; own-transfer rows formed by
-// createTransfer and completed once by attachSide; insertTransaction storing every field exactly and
-// settleHeld taking only the bank's settled figures. From src/local/transactions.
+// holding, instant, position, category and unlisted-only bounds, both orders and limit; own-transfer
+// rows formed by createTransfer and completed once by attachSide; insertTransaction storing every
+// field exactly and settleHeld taking only the bank's settled figures, cashback included. From
+// src/local/transactions.
 //
 // The modules are imported inside each test, not at the top: a missing module then fails each
 // test on its own instead of failing the whole file at load. The type imports are erased at run
@@ -358,6 +359,143 @@ describe('local/transactions', () => {
       expect(t2?.cashback).toBeNull();
       expect(t2?.amount.minor).toBe(-9900n);
       expect(col('t2')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  test('category and unlistedOnly bound before limit', async () => {
+    const { ensureTransactionSchema, insertTransaction, settleHeld, selectTransactions } =
+      await transactions();
+    const { openStore, MEMORY_LOCATION } = await storeModule();
+    const { narrowingName } = await registerModule();
+    const { money } = await moneyModule();
+
+    const A = narrowingName('monobank', 'account', 'a');
+    const when = Date.parse('2026-11-21T10:00:00Z');
+    const groceries = { category: 'Groceries & Supermarkets', merchant: 'Silpo' };
+    const fastFood = { category: 'Fast Food', merchant: 'KFC' };
+    const store = openStore(MEMORY_LOCATION, [ensureTransactionSchema]);
+    try {
+      store.write((tx: WriteTx) => {
+        const rows: [string, typeof groceries][] = [
+          ['p1', groceries],
+          ['p2', fastFood],
+          ['p3', groceries],
+          ['p4', fastFood],
+        ];
+        for (const [bankId, c] of rows) {
+          const t = plain(bankId, A, when, money(-100n, 'UAH'));
+          insertTransaction(tx, t as never, tx.claimPosition(), c as never);
+        }
+      });
+      type Query = Parameters<typeof selectTransactions>[1];
+      const positions = (q: Query): number[] =>
+        store.readSnapshot((s) => selectTransactions(s.db, q).map((r) => r.position));
+      // An added bound returns exactly the rows of the read without it that satisfy it, in order.
+      const narrows = (base: Query, bound: Query, keep: (p: number) => boolean) => {
+        expect(positions(bound)).toEqual(positions(base).filter(keep));
+      };
+
+      // 1. The category bound is applied before limit.
+      const isGroceries = (p: number) => p === 1 || p === 3;
+      expect(
+        positions({ order: 'position', category: 'Groceries & Supermarkets', limit: 1 } as Query),
+      ).toEqual([1]);
+      expect(positions({ order: 'position', category: 'Groceries & Supermarkets' } as Query)).toEqual(
+        [1, 3],
+      );
+      narrows(
+        { order: 'position' },
+        { order: 'position', category: 'Groceries & Supermarkets' } as Query,
+        isGroceries,
+      );
+
+      // 2. With no listed marks every row is unlisted.
+      expect(positions({ order: 'position', unlistedOnly: true })).toEqual([1, 2, 3, 4]);
+      narrows({ order: 'position' }, { order: 'position', unlistedOnly: true }, () => true);
+
+      // 3. Positions 1 and 4 marked listed through the store's release of a claim listing them.
+      store.write((tx: WriteTx) => {
+        expect(tx.takeClaim('new', 'tok', when, when + 60_000)).toBe(true);
+        expect(tx.releaseClaim('new', 'tok', [1, 4]).released).toBe(true);
+      });
+      const unlisted = (p: number) => p === 2 || p === 3;
+      expect(positions({ order: 'position', unlistedOnly: true })).toEqual([2, 3]);
+      expect(positions({ order: 'position', unlistedOnly: true, limit: 1 })).toEqual([2]);
+      expect(positions({ order: 'position', unlistedOnly: true, upToPosition: 2 })).toEqual([2]);
+      narrows({ order: 'position' }, { order: 'position', unlistedOnly: true }, unlisted);
+      narrows(
+        { order: 'position', upToPosition: 2 },
+        { order: 'position', unlistedOnly: true, upToPosition: 2 },
+        unlisted,
+      );
+      narrows(
+        { order: 'position', unlistedOnly: true },
+        { order: 'position', unlistedOnly: true, upToPosition: 2 },
+        (p) => p <= 2,
+      );
+
+      // 4. A settled replacement of row 1 (same key) keeps its position, so it stays listed.
+      store.write((tx: WriteTx) =>
+        settleHeld(tx, plain('p1', A, when + 1000, money(-90n, 'UAH')) as never),
+      );
+      expect(positions({ order: 'position', unlistedOnly: true })).toEqual([2, 3]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('cashback is held exactly and replaced on settlement', async () => {
+    const {
+      ensureTransactionSchema,
+      insertTransaction,
+      settleHeld,
+      selectTransactions,
+      getTransaction,
+    } = await transactions();
+    const { openStore, MEMORY_LOCATION } = await storeModule();
+    const { narrowingName } = await registerModule();
+    const { money } = await moneyModule();
+
+    const A = narrowingName('monobank', 'account', 'a');
+    const when = Date.parse('2026-11-21T10:00:00Z');
+    const classified = { category: 'Groceries & Supermarkets', merchant: 'Silpo' };
+    const hold: Fixture = {
+      ...plain('c1', A, when, money(-10000n, 'UAH')),
+      cashback: money(100n, 'UAH'),
+      settled: false,
+    };
+    const settledVersion: Fixture = {
+      ...hold,
+      occurredAt: when + 3_600_000,
+      amount: money(-9850n, 'UAH'),
+      cashback: money(98n, 'UAH'),
+      settled: true,
+    };
+    const none = plain('c2', A, when, money(-500n, 'UAH'));
+    const store = openStore(MEMORY_LOCATION, [ensureTransactionSchema]);
+    try {
+      store.write((tx: WriteTx) =>
+        insertTransaction(tx, hold as never, tx.claimPosition(), classified as never),
+      );
+      store.write((tx: WriteTx) => settleHeld(tx, settledVersion as never));
+      store.write((tx: WriteTx) =>
+        insertTransaction(tx, none as never, tx.claimPosition(), classified as never),
+      );
+
+      const [listed, fetched, second] = store.readSnapshot((s) => [
+        selectTransactions(s.db, { order: 'position' }).find((r) => r.bankId === 'c1'),
+        getTransaction(s.db, { sourceId: 'monobank', bankId: 'c1' }),
+        getTransaction(s.db, { sourceId: 'monobank', bankId: 'c2' }),
+      ]);
+      expect(listed?.amount).toEqual(money(-9850n, 'UAH'));
+      expect(listed?.cashback).toEqual(money(98n, 'UAH'));
+      expect(listed?.position).toBe(1);
+      expect(listed?.category).toBe('Groceries & Supermarkets');
+      expect(listed?.merchant).toBe('Silpo');
+      expect(fetched).toEqual(listed ?? null);
+      expect(second?.cashback).toBeNull();
     } finally {
       store.close();
     }
