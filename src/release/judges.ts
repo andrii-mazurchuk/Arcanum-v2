@@ -460,7 +460,18 @@ function compare(path: string, b: Json | undefined, a: Json | undefined): string
     }
     return null;
   }
+  if (b !== a && nowDerived(path, b, a)) return null;
   return b === a ? null : differs(path, b, a);
+}
+
+// Now-derived instants (spec ruling 2026-11-23): an in-progress period's `until`, generation times.
+// Both values sit within a few hours of the run's clock, so they move between two asks by design.
+const NOW_WINDOW_MS = 12 * 3_600_000;
+function nowDerived(path: string, b: Json | undefined, a: Json | undefined): boolean {
+  if (typeof b !== 'number' || typeof a !== 'number') return false;
+  if (!/(^|\.)(period\.until|generatedAt|generated)$/.test(path.replace(/\[\d+\]/g, ''))) return false;
+  const now = Date.now();
+  return Math.abs(now - b) < NOW_WINDOW_MS && Math.abs(now - a) < NOW_WINDOW_MS;
 }
 
 function coveredRangesDifference(path: string, b: Json | undefined, a: Json | undefined): string | null {
