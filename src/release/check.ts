@@ -21,6 +21,7 @@ import {
   type Verdict,
   backfillAlongside,
   expectedNetPosition,
+  expectedPlnMinor,
   fixtureMarkers,
   holdingNameFor,
   judgeAnswerBound,
@@ -61,6 +62,7 @@ const NEW_FAMILY = 'new_since_last_asked';
 const RATES_FAMILY = 'exchange_rates';
 const PERIOD_FAMILIES = new Set(['transaction_search', 'spending_breakdown', 'foreign_spending', 'behaviour_patterns']);
 const NEW_PAGE_LIMIT = 100; // pages of one 'new' drain before it is given up
+const SECOND_SPENDING_MINOR = 30_066n; // the second source's expected spending in PLN minor units (S-238)
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -259,6 +261,8 @@ interface Row {
   description: string;
   amount: string;
   currency: string;
+  shownAmount: string;
+  shownCurrency: string;
   category: Json;
   merchant: Json;
 }
@@ -274,6 +278,8 @@ function listedRows(value: Json): Row[] {
     description: String(r.description),
     amount: String(at(r, 'amount', 'amount')),
     currency: String(at(r, 'amount', 'currency')),
+    shownAmount: String(at(r, 'shown', 'amount') ?? 'absent'),
+    shownCurrency: String(at(r, 'shown', 'currency') ?? 'absent'),
     category: r.category ?? null,
     merchant: r.merchant ?? null,
   }));
@@ -284,7 +290,16 @@ function balanceLines(value: Json): JsonObject[] {
   return lines.flatMap((l) => (Array.isArray(l) ? l.filter(isObject) : []));
 }
 
-const MONO_CURRENCY: Readonly<Record<number, string>> = { 980: 'UAH', 840: 'USD' };
+const MONO_CURRENCY: Readonly<Record<number, 'UAH' | 'USD'>> = { 980: 'UAH', 840: 'USD' };
+
+// Minor units of a two-decimal amount text; null when the text is not one.
+function minorOf(text: Json | undefined): bigint | null {
+  if (typeof text !== 'string') return null;
+  const m = /^(-?)(\d+)\.(\d{2})$/.exec(text);
+  if (m === null) return null;
+  const v = BigInt(m[2]) * 100n + BigInt(m[3]);
+  return m[1] === '-' ? -v : v;
+}
 
 interface Phase {
   readonly name: string;
@@ -613,31 +628,90 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
     return [...m.initial, m.pushed, m.dropped, ...m.whileStopped, ...m.older].filter((t) => t.time !== null);
   };
 
-  // Every Monobank row's amount equals the served amount exactly; the pair carries one category and merchant.
-  const judgeMonoRows = (rows: readonly Row[], what: string) => {
-    const served = new Map(servedMono().map((t) => [t.id, t]));
-    for (const r of rows) {
-      if (r.sourceId !== 'monobank') continue;
-      const t = served.get(r.bankId);
-      if (t === undefined) continue;
-      const amount = servedText(BigInt(t.amount));
-      const currency = MONO_CURRENCY[t.currencyCode];
-      if (r.amount !== amount || r.currency !== currency) {
-        fail(['exact_money'], `${what}: row ${r.bankId} amount ${r.amount} ${r.currency}, served ${amount} ${currency}`);
-      }
+  // One row's amount equals the served amount exactly, and its shown amount the expected PLN figure.
+  const judgeRow = (r: Row, amount: string, currency: string, shownMinor: bigint, what: string) => {
+    if (r.amount !== amount || r.currency !== currency) {
+      fail(['exact_money'], `${what}: row ${r.bankId} amount ${r.amount} ${r.currency}, served ${amount} ${currency}`);
     }
-    const pair = rows.filter((r) => r.sourceId === 'monobank' && r.description === ds.pair.text);
-    if (pair.length === 2) {
-      const [a, b] = pair;
-      if (JSON.stringify(a.category) !== JSON.stringify(b.category) || JSON.stringify(a.merchant) !== JSON.stringify(b.merchant)) {
-        fail(
-          ['exact_money'],
-          `${what}: the pair differs: category ${JSON.stringify(a.category)} / ${JSON.stringify(b.category)}, merchant ${JSON.stringify(a.merchant)} / ${JSON.stringify(b.merchant)}`,
-        );
+    const shown = servedText(shownMinor);
+    if (r.shownAmount !== shown || r.shownCurrency !== 'PLN') {
+      fail(['exact_money'], `${what}: row ${r.bankId} shown ${r.shownAmount} ${r.shownCurrency}, expected ${shown} PLN`);
+    }
+  };
+
+  // Every row the dataset served, Monobank's and the second source's, judged by judgeRow.
+  const judgeRows = (rows: readonly Row[], what: string) => {
+    const mono = new Map(servedMono().map((t) => [t.id, t]));
+    const sec = new Map(ds.second.initial.map((t) => [t.id, t]));
+    for (const r of rows) {
+      if (r.sourceId === 'monobank') {
+        const t = mono.get(r.bankId);
+        if (t === undefined) continue;
+        const currency = MONO_CURRENCY[t.currencyCode];
+        judgeRow(r, servedText(BigInt(t.amount)), currency, expectedPlnMinor(BigInt(t.amount), currency), what);
+      } else if (r.sourceId === 'second') {
+        const t = sec.get(r.bankId);
+        const minor = t === undefined ? null : minorOf(t.amount);
+        if (t === undefined || minor === null) continue;
+        judgeRow(r, t.amount, t.currency, expectedPlnMinor(minor, t.currency), what);
       }
     }
   };
 
+  // The pair search: exactly two rows, one at each served amount, with equal category and merchant.
+  const judgePair = (rows: readonly Row[], what: string) => {
+    const served = new Map(servedMono().map((t) => [t.id, t]));
+    const amounts = [ds.pair.initialId, ds.pair.pushedId].map((id) => {
+      const t = served.get(id);
+      return t === undefined ? 'absent' : servedText(BigInt(t.amount));
+    });
+    const seen = rows.map((r) => r.amount);
+    const oneEach = rows.length === 2 && amounts.every((a) => seen.filter((s) => s === a).length === (amounts[0] === amounts[1] ? 2 : 1));
+    if (!oneEach) {
+      fail(['exact_money'], `${what}: ${rows.length} rows at ${seen.join(', ') || 'none'}, expected two at ${amounts.join(', ')}`);
+      return;
+    }
+    const [a, b] = rows;
+    if (JSON.stringify(a.category) !== JSON.stringify(b.category) || JSON.stringify(a.merchant) !== JSON.stringify(b.merchant)) {
+      fail(
+        ['exact_money'],
+        `${what}: the pair differs: category ${JSON.stringify(a.category)} / ${JSON.stringify(b.category)}, merchant ${JSON.stringify(a.merchant)} / ${JSON.stringify(b.merchant)}`,
+      );
+    }
+  };
+
+  // Rates used (G5): a search's items are each marked substituted at the record's date, USD to PLN with
+  // both legs listed; a balance's items carry the same date and are not marked.
+  const rateDate = localDate(ds.monobank.rateStamp, ds.zone);
+  const judgeRatesUsed = (value: JsonObject | null, kind: 'search' | 'balance', what: string) => {
+    if (value === null) return;
+    const list = at(value, 'statements', 'ratesUsed');
+    if (!Array.isArray(list)) {
+      fail(['exact_money'], `${what}: no rates-used statement`);
+      return;
+    }
+    const applied = list.filter(isObject).filter((i) => i.kind === 'applied');
+    const substituted = kind === 'search';
+    for (const i of applied) {
+      if (i.date !== rateDate || i.substituted !== substituted) {
+        fail(
+          ['exact_money'],
+          `${what}: rate ${String(i.from)} to ${String(i.to)} dated ${String(i.date)} substituted ${String(i.substituted)}, expected ${rateDate} substituted ${substituted}`,
+        );
+      }
+    }
+    if (kind !== 'search' || !listedRows(value).some((r) => r.currency === 'USD')) return;
+    for (const [from, to] of [
+      ['USD', 'UAH'],
+      ['UAH', 'PLN'],
+    ]) {
+      if (!applied.some((i) => i.from === from && i.to === to)) {
+        fail(['exact_money'], `${what}: USD to PLN without the ${from} to ${to} leg among the rates used`);
+      }
+    }
+  };
+
+  // The net position equals the expected figure and the sum of the lines' shown own-money amounts.
   const judgeNet = (value: JsonObject | null, withSecond: boolean, what: string) => {
     if (value === null) return;
     const expected = servedText(expectedNetPosition(ds, withSecond));
@@ -647,6 +721,26 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
     if (amount !== expected || currency !== 'PLN') {
       fail(['exact_money'], `${what}: net position ${String(amount)} ${String(currency)}, expected ${expected} PLN`);
     }
+    let sum = 0n;
+    for (const line of balanceLines(value)) {
+      const shown = at(line, 'ownMoney', 'shown');
+      const minor = minorOf(at(shown, 'amount'));
+      if (minor === null || at(shown, 'currency') !== 'PLN') {
+        fail(['exact_money'], `${what}: line ${String(line.holdingId)} own money shown ${JSON.stringify(shown ?? null)}`);
+        continue;
+      }
+      sum += minor;
+    }
+    if (amount !== servedText(sum)) {
+      fail(['exact_money'], `${what}: net position ${String(amount)}, the lines' shown own money sum to ${servedText(sum)}`);
+    }
+  };
+
+  // A search answered without refusal, judged for exact money: its rows and its rates used.
+  const judgeSearch = (value: JsonObject | null, what: string) => {
+    if (value === null) return;
+    judgeRows(listedRows(value), what);
+    judgeRatesUsed(value, 'search', what);
   };
 
   // --- phases ---
@@ -713,12 +807,10 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
         );
         if (search !== null) {
           const rows = listedRows(search);
-          const expected = servedText(BigInt(ds.monobank.pushed.amount));
           const row = rows.find((r) => r.bankId === ds.pair.pushedId);
           if (row === undefined) fail(keys, `P2 search for ${ds.pair.text}: the pushed transaction is not listed`);
-          else if (row.amount !== expected || row.currency !== 'UAH') {
-            fail(['exact_money'], `P2 pushed row amount ${row.amount} ${row.currency}, served ${expected} UAH`);
-          }
+          judgeSearch(search, 'P2 search for the pair');
+          judgePair(rows, 'P2 search for the pair');
         }
         const balance = valueOf(await conn.ask('balance', {}), 'P2 balance', keys);
         if (balance !== null) {
@@ -799,8 +891,10 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
         const older = olderMarkers(ds);
         for (const m of [...older.inRange, ...older.outOfRange]) {
           const r = await conn.ask('transaction_search', { text: m, period: ds.allPeriod });
-          if (r.kind === 'answer' && !r.refused) searches.set(m, r.value);
-          else fail(c, `P4 search for older marker ${m}: ${r.kind === 'failed' ? r.reason : `refused: ${r.text}`}`);
+          if (r.kind === 'answer' && !r.refused) {
+            searches.set(m, r.value);
+            judgeSearch(r.value, `P4 search for older marker ${m}`);
+          } else fail(c, `P4 search for older marker ${m}: ${r.kind === 'failed' ? r.reason : `refused: ${r.text}`}`);
         }
         const verdict = judgeBackfill({ exitCode, stdout: await stdout, before, after, searches }, ds);
         if (!verdict.pass) fail(c, ...verdict.observed.map((o) => `P4 ${o}`));
@@ -809,15 +903,26 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
 
         // Exact money over the Monobank figures.
         const e: PromiseKey[] = ['exact_money'];
-        const everything = valueOf(await searchAll(conn, 'monobank'), 'P4 search of every Monobank row', e);
-        if (everything !== null) judgeMonoRows(listedRows(everything), 'P4 search');
-        judgeNet(valueOf(await conn.ask('balance', {}), 'P4 balance', e), false, 'P4 balance');
+        judgeSearch(valueOf(await searchAll(conn, 'monobank'), 'P4 search of every Monobank row', e), 'P4 search');
+        for (const t of [...ds.monobank.initial, ds.monobank.pushed, ds.monobank.dropped, ...ds.monobank.whileStopped]) {
+          if (t.description === ds.pair.text) continue;
+          const what = `P4 search for ${t.description}`;
+          judgeSearch(valueOf(await conn.ask('transaction_search', { text: t.description, period: ds.allPeriod }), what, e), what);
+        }
+        const pair = valueOf(await conn.ask('transaction_search', { text: ds.pair.text, period: ds.allPeriod }), 'P4 search for the pair', e);
+        if (pair !== null) {
+          judgeSearch(pair, 'P4 search for the pair');
+          judgePair(listedRows(pair), 'P4 search for the pair');
+        }
+        const balance = valueOf(await conn.ask('balance', {}), 'P4 balance', e);
+        judgeNet(balance, false, 'P4 balance');
+        judgeRatesUsed(balance, 'balance', 'P4 balance');
 
         const narrowed = valueOf(await conn.ask('balance', { narrowing: 'monobank' }), 'P4 balance narrowed to monobank', e);
         if (narrowed !== null) {
           const name = holdingNameFor(narrowed, 'monobank', ds.fixture.holding);
           if (name.name === null) {
-            fail(e, `fixture holding ${ds.fixture.holding} not named exactly once in the balance answer: seen ${name.seen.join(', ') || 'none'}`);
+            fail(e, `fixture account ${ds.fixture.holding} not found among holdings: ${name.seen.join(', ')}`);
           } else {
             const b = await conn.ask('spending_breakdown', {
               narrowing: name.name,
@@ -994,19 +1099,44 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
             }
           }
           judgeNet(balance, true, 'P6 combined balance');
+          judgeRatesUsed(balance, 'balance', 'P6 combined balance');
         }
         const search = valueOf(await searchAll(conn), 'P6 combined search', [...s, ...c, ...e]);
         if (search !== null) {
-          const rows = listedRows(search);
-          const counts = countsBy(rows);
+          const counts = countsBy(listedRows(search));
           for (const t of ds.second.initial) {
             const n = counts.get(t.description) ?? 0;
             if (n !== 1) fail([...s, ...c], `P6 second-source marker ${t.description} found ${n} times, expected once`);
-            const row = rows.find((r) => r.sourceId === 'second' && r.bankId === t.id);
-            if (row !== undefined && (row.amount !== t.amount || row.currency !== t.currency)) {
-              fail(e, `P6 second-source row ${t.id} amount ${row.amount} ${row.currency}, served ${t.amount} ${t.currency}`);
-            }
           }
+          judgeRows(
+            listedRows(search).filter((r) => r.sourceId === 'second'),
+            'P6 combined search',
+          );
+          judgeRatesUsed(search, 'search', 'P6 combined search');
+        }
+
+        // |totalSpending| of the combined breakdown over the whole period grows by exactly the second
+        // source's spending, 300.66.
+        const breakdownKey = 'spending_breakdown (combined)';
+        const spending = (r: AskResult | undefined, label: string) => {
+          if (r === undefined) {
+            fail([...s, ...e], `${label} ${breakdownKey}: not asked`);
+            return null;
+          }
+          const v = valueOf(r, `${label} ${breakdownKey}`, [...s, ...e]);
+          if (v === null) return null;
+          const total = at(v, 'outcome', 'body', 'totalSpending');
+          const minor = minorOf(at(total, 'amount'));
+          if (minor === null) fail([...s, ...e], `${label} ${breakdownKey}: total spending ${JSON.stringify(total ?? null)}`);
+          return minor === null ? null : minor < 0n ? -minor : minor;
+        };
+        const spentBefore = spending(before.get(breakdownKey), 'P6 before');
+        const spentAfter = spending(afterMono.values.get(breakdownKey), 'P6 after');
+        if (spentBefore !== null && spentAfter !== null && spentAfter - spentBefore !== SECOND_SPENDING_MINOR) {
+          fail(
+            [...s, ...e],
+            `P6 combined total spending grew from ${servedText(spentBefore)} to ${servedText(spentAfter)}, by ${servedText(spentAfter - spentBefore)}, expected ${servedText(SECOND_SPENDING_MINOR)}`,
+          );
         }
         const jars = valueOf(await conn.ask('jars', {}), 'P6 combined jars', s);
         if (jars !== null) {
