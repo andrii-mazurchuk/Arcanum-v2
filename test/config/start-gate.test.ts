@@ -194,7 +194,7 @@ describe('config/start-gate', () => {
     expect(r1.code).toBe(SETTINGS_REFUSAL_EXIT);
     expect(r1.calls).toEqual([]);
     expect(r1.err).toEqual([STORAGE_MISSING, TOKEN_MISSING]);
-    expect(r1.err).toEqual((checkStart({ kind: 'service' }, r1.record) as { lines: readonly string[] }).lines);
+    expect<any>(r1.err).toEqual((checkStart({ kind: 'service' }, r1.record) as { lines: readonly string[] }).lines);
 
     // 2. A backfill refusal.
     const r2 = await run({ kind: 'backfill', sourceId: 'zzz' }, [MONO, ALT], { ARCANUM_STORAGE: ':memory:' }, 0);
@@ -270,7 +270,7 @@ describe('config/start-gate', () => {
       expect(code1).toBe(SETTINGS_REFUSAL_EXIT);
       expect(s1.calls.length).toBe(0);
       expect(lines).toEqual([TOKEN_MISSING]);
-      expect(lines).toEqual((checkStart({ kind: 'service' }, record) as { lines: readonly string[] }).lines);
+      expect<any>(lines).toEqual((checkStart({ kind: 'service' }, record) as { lines: readonly string[] }).lines);
       expect(readdirSync(tmp)).toEqual([]);
 
       // 2. The release check looks at no source group and passes start's code through.

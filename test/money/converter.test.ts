@@ -60,7 +60,7 @@ async function withConverter(
   });
   store.readSnapshot((snap) => {
     const c = createConverter(openRateView(snap, cal, 'monobank'), cal, display as any);
-    expect(c.display).toBe(display);
+    expect<any>(c.display).toBe(display);
     body(c, cal);
   });
   store.close();

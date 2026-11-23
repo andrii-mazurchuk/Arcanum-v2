@@ -22,7 +22,7 @@ describe('analysis/measures', () => {
       [100n, 0n, 'falling'],
     ];
     for (const [f, l, want] of directions) {
-      expect(directionOf(f, l)).toBe(want);
+      expect<any>(directionOf(f, l)).toBe(want);
     }
     expect(() => directionOf(0n, 5n)).toThrow(RangeError);
     expect(() => directionOf(-1n, 5n)).toThrow(RangeError);

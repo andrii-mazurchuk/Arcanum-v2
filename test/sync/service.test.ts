@@ -240,7 +240,7 @@ describe('sync/service', () => {
       handler!();
       handler!();
       expect(await within(settled, 3000)).toBe('resolved');
-      expect(result).toBe(0);
+      expect<any>(result).toBe(0);
       expect(lines[lines.length - 1]).toBe('service stopped');
       expect(lines.filter((l) => l === 'service stopped').length).toBe(1);
       expect(signals[0]!.aborted).toBe(true);
@@ -331,7 +331,7 @@ describe('sync/service', () => {
       expect(stopSignals.calls).toBe(1);
       handler!();
       expect(await within(settled, 3000)).toBe('resolved');
-      expect(result).toBe(0);
+      expect<any>(result).toBe(0);
     } finally {
       if (result === null && handler !== null) {
         (handler as () => void)();

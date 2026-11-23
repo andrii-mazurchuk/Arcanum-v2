@@ -102,8 +102,8 @@ describe('config/settings', () => {
     expect(path.shared.storage).toEqual({ state: 'given', name: 'ARCANUM_STORAGE', value: '/no/such/dir/a.db' });
 
     // 5. settingValue gives a value only when given or defaulted.
-    expect(settingValue(mem.shared.storage)).toBe(MEMORY_LOCATION);
-    expect(settingValue(empty.shared.firstFillDays)).toBe(90);
+    expect<any>(settingValue(mem.shared.storage)).toBe(MEMORY_LOCATION);
+    expect<any>(settingValue(empty.shared.firstFillDays)).toBe(90);
     expect(settingValue(empty.shared.storage)).toBeUndefined();
   });
 

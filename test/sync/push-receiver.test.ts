@@ -313,7 +313,7 @@ describe('sync/push-receiver', () => {
       expect(() =>
         startPushReceiver({
           ...deps,
-          port: freePort,
+          port: freePort!,
           routes: [route('stub', SECRET), route('stub2', SECRET)],
         }),
       ).toThrow(PushRouteConflictError);
