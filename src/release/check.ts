@@ -6,7 +6,7 @@
 // error, and cleans up on every exit path. It reads no environment: a child's host variables come as
 // ctx.host.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandStarter, StartContext } from '../app/main';
@@ -471,6 +471,27 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
     }
   };
 
+  // Readiness (spec ruling 2026-11-23): after every start the check waits, within a bound, until the
+  // storage location exists and the push endpoint's address check answers 200; only then does it
+  // connect the assistant or push. A 'no local copy' refusal before that is not a product fault.
+  const READY_BOUND_MS = 120_000;
+  const serviceReady = async (): Promise<void> => {
+    const until = Date.now() + READY_BOUND_MS;
+    for (;;) {
+      let pushOk = false;
+      try {
+        pushOk = (await fetch(`http://127.0.0.1:${pushPort}/`, { method: 'GET' })).status === 200;
+      } catch {
+        pushOk = false;
+      }
+      if (pushOk && existsSync(`${folder}/arcanum.db`)) return;
+      if (Date.now() > until) {
+        throw new HarnessFault(`${currentPhase.name}: the service was not ready within ${READY_BOUND_MS} ms (storage ${existsSync(`${folder}/arcanum.db`) ? 'present' : 'absent'}, push address check ${pushOk ? '200' : 'not 200'}) (harness fault)`);
+      }
+      await serviceSleep(250);
+    }
+  };
+
   const requireService = () => {
     if (service === null || service.exitCode !== null) {
       throw new HarnessFault(`${currentPhase.name}: the service is not running (harness fault)`);
@@ -776,6 +797,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
     let p1Start = 0;
     await phase(PHASES.P1, async () => {
       p1Start = startService(false);
+      await serviceReady();
       await withConnection(false, async (conn) => {
         const o = await waitCoverage(
           conn,
@@ -838,6 +860,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
       for (const t of ds.monobank.whileStopped) await mono!.gain(t, 'drop');
       const lastGain = Math.max(...ds.monobank.whileStopped.map((t) => t.time!));
       startService(false);
+      await serviceReady();
       await withConnection(false, async (conn) => {
         const c = PHASES.P4.serves.filter((k) => k === 'complete_and_current');
         const o = await waitCoverage(
@@ -1031,6 +1054,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
 
       await signalStep('P6 stop before switch-on', PHASES.P6.serves);
       const restartAt = startService(true);
+      await serviceReady();
 
       await withConnection(true, async (conn) => {
         const perAccount = ds.second.accounts.map((a) => ds.second.initial.filter((t) => t.account === a.id).length);
