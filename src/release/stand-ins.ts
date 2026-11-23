@@ -293,7 +293,8 @@ export async function startMonobankStandIn(ds: Dataset, token: string, now: () =
     now,
     limits: MONOBANK_STAND_IN_LIMITS,
     route,
-    authorized: (req) => req.headers.get('X-Token') === token,
+    // Only /personal/* needs the token; /bank/currency is public and a token sent there is ignored (iss-1741).
+    authorized: (req) => !new URL(req.url).pathname.startsWith('/personal/') || req.headers.get('X-Token') === token,
     unauthorized: json(403, { errorDescription: 'Unknown token' }),
     refusal: json(429, { errorDescription: 'Too many requests' }),
   });
