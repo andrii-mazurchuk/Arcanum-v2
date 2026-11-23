@@ -103,7 +103,7 @@ describe('sources/monobank/source', () => {
 
   test('seconds window', async () => {
     const { secondsWindow, MONOBANK_MAX_WINDOW_MS } = await sourceModule();
-    const sw = (a: number, b: number) => secondsWindow([a, b] as any);
+    const sw = (a: number, b: number) => secondsWindow({ startAt: a, endAt: b } as any);
 
     // 1–4. ceil for both ends, the end exclusive; empty gives null.
     expect(sw(1_700_000_000_500, 1_700_000_060_500)).toEqual({ from: 1_700_000_001, to: 1_700_000_060 });
@@ -218,8 +218,8 @@ describe('sources/monobank/source', () => {
 
     const UAH = await uahHolding('u1');
     const seenAt = 1_800_000_000_000;
-    const W: any = [1_700_000_000_000, 1_702_682_000_000];
-    const V: any = [1_700_000_000_000, 1_700_000_060_000];
+    const W: any = { startAt: 1_700_000_000_000, endAt: 1_702_682_000_000 };
+    const V: any = { startAt: 1_700_000_000_000, endAt: 1_700_000_060_000 };
     const item = (id: string, time: number, extra: Record<string, unknown> = {}) => ({
       id,
       time,
@@ -236,7 +236,7 @@ describe('sources/monobank/source', () => {
     expect(MONOBANK_PAGE_CAP).toBe(500);
     const full = page(reply(newestFirst(500)), W);
     expect(full.items.length).toBe(500);
-    expect(full.next).toEqual([1_700_000_000_000, 1_701_000_001_000]);
+    expect(full.next).toEqual({ startAt: 1_700_000_000_000, endAt: 1_701_000_001_000 });
 
     // 2. One short of the cap: no continuation.
     expect(page(reply(newestFirst(499)), W).next).toBeNull();
@@ -517,7 +517,7 @@ describe('sources/monobank/client', () => {
     // 2. A statement over the window's inclusive seconds.
     {
       const f = fakeHttp();
-      const page = await (await open(f.http)).fetchWindow(A, [1_700_000_000_000, 1_700_000_060_000], ac.signal);
+      const page = await (await open(f.http)).fetchWindow(A, { startAt: 1_700_000_000_000, endAt: 1_700_000_060_000 }, ac.signal);
       expect(f.calls.length).toBe(1);
       expect(f.calls[0].callClass).toBe('statement');
       expect(f.calls[0].url).toBe('http://bank.test/personal/statement/acc1/1700000000/1700000059');
@@ -530,7 +530,7 @@ describe('sources/monobank/client', () => {
     // 3. An empty window makes no call.
     {
       const f = fakeHttp();
-      const page = await (await open(f.http)).fetchWindow(A, [1_700_000_000_200, 1_700_000_000_700], ac.signal);
+      const page = await (await open(f.http)).fetchWindow(A, { startAt: 1_700_000_000_200, endAt: 1_700_000_000_700 }, ac.signal);
       expect(page).toEqual({ items: [], next: null });
       expect(f.calls.length).toBe(0);
     }
@@ -569,7 +569,7 @@ describe('sources/monobank/client', () => {
     {
       const f = fakeHttp();
       const client = await open(f.http);
-      const W = [1_700_000_000_000, 1_700_000_060_000];
+      const W = { startAt: 1_700_000_000_000, endAt: 1_700_000_060_000 };
       const hook = 'https://h.example/hook/abcdefghijklmnop';
 
       f.reply(429, '');
