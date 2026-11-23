@@ -6,11 +6,33 @@
 // on its own instead of failing the whole file at load.
 
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const store = () => import('../../src/db/index');
+
+const STORE_URL = pathToFileURL(join(import.meta.dir, '..', '..', 'src', 'db', 'index.ts')).href;
+
+// Every file in dir with its length, sorted by name.
+const entries = (dir: string) =>
+  readdirSync(dir)
+    .sort()
+    .map((name) => ({ name, size: statSync(join(dir, name)).size }));
+
+// Reads the child's stdout until it prints `line`.
+const waitForLine = async (stdout: ReadableStream<Uint8Array>, line: string) => {
+  const reader = stdout.getReader();
+  const decoder = new TextDecoder();
+  let seen = '';
+  while (!seen.split(/\r?\n/).includes(line)) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`child ended before printing ${line}; printed: ${seen}`);
+    seen += decoder.decode(value);
+  }
+  reader.releaseLock();
+};
 
 const F = 'new_since';
 
@@ -289,4 +311,72 @@ describe('store/store', () => {
     ]);
     s.close();
   });
+
+  test('existing-only open finds a WAL store before any checkpoint', async () => {
+    const { openStore, NoLocalCopyError, StoreLocationError } = await store();
+    const dir = mkdtempSync(join(tmpdir(), 'arcanum-store-'));
+    const path = join(dir, 'copy.sqlite');
+    const empty = mkdtempSync(join(tmpdir(), 'arcanum-store-'));
+
+    // Process A: opens creating, commits one holding row, and stays open without checkpointing.
+    const script =
+      `const { openStore } = await import(${JSON.stringify(STORE_URL)});` +
+      `const s = openStore(${JSON.stringify(path)});` +
+      `s.write((tx) => {` +
+      `  tx.registerSource({ id: 'monobank', capabilities: [] });` +
+      `  tx.registerHolding({ kind: 'jar', sourceId: 'monobank', bankId: 'J1', currency: 'UAH' });` +
+      `});` +
+      `console.log('ready');` +
+      `setInterval(() => {}, 1 << 30);`;
+    const child = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'inherit' });
+    let opened: { close(): void } | undefined;
+    try {
+      await waitForLine(child.stdout, 'ready');
+
+      // Precondition: the committed row is still in the write-ahead log.
+      const before = entries(dir);
+      const main = before.find((e) => e.name === 'copy.sqlite');
+      const wal = before.find((e) => e.name === 'copy.sqlite-wal');
+      expect(main).toBeDefined();
+      expect(main!.size === 0 || (wal !== undefined && wal.size > 0)).toBe(true);
+
+      let caught: unknown;
+      try {
+        opened = openStore(path, [], 'existing');
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught instanceof NoLocalCopyError).toBe(false);
+      expect(caught instanceof StoreLocationError).toBe(false);
+      expect(caught).toBeUndefined();
+
+      const s = opened!;
+      expect(s.readSnapshot((snap) => snap.register().holdings)).toEqual([
+        { id: 'monobank:jar:J1', kind: 'jar', sourceId: 'monobank', bankId: 'J1', currency: 'UAH' },
+      ] as any);
+
+      // No file was created or truncated by the open.
+      const after = entries(dir);
+      expect(after.map((e) => e.name)).toEqual(before.map((e) => e.name));
+      for (const e of before) {
+        expect(after.find((a) => a.name === e.name)!.size).toBeGreaterThanOrEqual(e.size);
+      }
+
+      // An empty folder is still no local copy, and nothing appears in it.
+      let refused: unknown;
+      try {
+        openStore(join(empty, 'copy.sqlite'), [], 'existing').close();
+      } catch (e) {
+        refused = e;
+      }
+      expect(refused).toBeInstanceOf(NoLocalCopyError);
+      expect(readdirSync(empty)).toEqual([]);
+    } finally {
+      opened?.close();
+      child.kill();
+      await child.exited;
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(empty, { recursive: true, force: true });
+    }
+  }, 30000);
 });
