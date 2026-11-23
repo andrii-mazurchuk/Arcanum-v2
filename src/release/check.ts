@@ -480,7 +480,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
     for (;;) {
       let pushOk = false;
       try {
-        pushOk = (await fetch(`http://127.0.0.1:${pushPort}/`, { method: 'GET' })).status === 200;
+        pushOk = (await fetch(`http://127.0.0.1:${pushPort}/${secret}`, { method: 'GET' })).status === 200;
       } catch {
         pushOk = false;
       }
