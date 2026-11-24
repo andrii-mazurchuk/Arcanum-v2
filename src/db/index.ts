@@ -383,11 +383,19 @@ export function openStore(
     },
     // Synchronous: finalises every statement prepared on the connection (bun:sqlite finalises the
     // cached ones itself), then close(true) closes it or throws, so no handle on the location remains.
+    // A statement already collected but not yet swept still holds the connection busy: a full
+    // synchronous collection sweeps it (finalising it), and the second close(true) throws if it fails.
     close() {
       if (closed) return;
       for (const ref of prepared) ref.deref()?.finalize();
       prepared.clear();
-      db.close(true);
+      try {
+        db.close(true);
+      } catch {
+        // bun:sqlite reports the busy close as a plain Error ('database is locked'), so any failure is retried once
+        Bun.gc(true);
+        db.close(true);
+      }
       closed = true;
     },
   };
