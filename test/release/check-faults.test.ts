@@ -39,6 +39,7 @@ describe('release/check faults', () => {
           return s;
         },
       }));
+      try {
       const before = releaseFolders();
 
       const { releaseCheck } = await import('../../src/release/check');
@@ -78,6 +79,10 @@ describe('release/check faults', () => {
           () => true,
         );
         expect(refused).toBe(true);
+      }
+      } finally {
+        // Bun keeps a module mock for the whole run: restore the real stand-ins so later files see them.
+        mock.module('../../src/release/stand-ins', () => real);
       }
     },
     60_000,
