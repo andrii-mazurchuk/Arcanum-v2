@@ -258,51 +258,71 @@ describe('app/starters', () => {
     'service stops on an early signal',
     async () => {
       const { STORE_SCHEMAS } = await starters();
-      const { NoLocalCopyError, openStore } = await db();
+      const { STORE_LOCK_WAIT_MS, openStore } = await db();
       const { buildDataset } = await dataset();
       const { startMonobankStandIn } = await standIns();
       const { spawnProduct } = await spawn();
 
       const ds = buildDataset(Math.floor(Date.now() / 1000) * 1000, 'svcearly');
       const m = await startMonobankStandIn(ds, 't', Date.now);
-      const dir = mkdtempSync(join(tmpdir(), 'arcanum-starters-early-'));
-      try {
-        const location = join(dir, 'a.db');
+      const folders: string[] = [];
+      const freshConfig = () => {
+        const dir = mkdtempSync(join(tmpdir(), 'arcanum-starters-early-'));
+        folders.push(dir);
         // The push receiver on any free port, so repeated starts never contend for the default one.
-        const config = {
-          ARCANUM_STORAGE: location,
+        return {
+          ARCANUM_STORAGE: join(dir, 'a.db'),
           ARCANUM_MONOBANK_TOKEN: 't',
           ARCANUM_MONOBANK_BASE_URL: m.baseAddress,
           ARCANUM_PUSH_PORT: '0',
         };
+      };
 
-        // Signalled as soon as the pid is known, before any stderr line.
-        const earlyRun = async (what: string): Promise<number> => {
-          const p = spawnProduct(['service'], config, process.env);
-          expect(p.pid).toBeGreaterThan(0);
-          p.signal('SIGTERM');
-          const err = watch(p.stderr);
-          void new Response(p.stdout).text();
-          const code = await exitWithin(p, STOP_BOUND_MS, what);
-          if (code !== 0) throw new Error(`${what} exited ${code} (143 is death by the default action): ${await err.done}`);
-          return code;
-        };
-
-        // 1. One early signal: exit 0, and the store is left openable or absent, never locked.
-        expect(await earlyRun('service (early signal)')).toBe(0);
-        // Opened or no local copy; a lock wait surfaces as the store's busy error and fails here.
-        try {
-          openStore(location, STORE_SCHEMAS, 'existing').close();
-        } catch (e) {
-          if (!(e instanceof NoLocalCopyError)) throw e;
+      // The first moment the service can observe a signal the test can see: the store file appears
+      // (the starter's latch is already installed, runService has not attached yet). Signal at once.
+      const earlyRun = async (what: string): Promise<number> => {
+        const config = freshConfig();
+        const location = config.ARCANUM_STORAGE;
+        const p = spawnProduct(['service'], config, process.env);
+        const err = watch(p.stderr);
+        void new Response(p.stdout).text();
+        const deadline = Date.now() + 10_000;
+        while (!existsSync(location) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1));
         }
+        if (!existsSync(location)) {
+          p.signal('SIGKILL');
+          throw new Error(`${what}: ${location} never appeared: ${err.text()}`);
+        }
+        p.signal('SIGTERM');
+        const code = await exitWithin(p, STOP_BOUND_MS, what);
+        if (code !== 0) throw new Error(`${what} exited ${code} (143 is death by the default action): ${await err.done}`);
 
-        // 2. Ten in a row, no delay: every one exits 0.
+        // The store is closed: an existing-only open succeeds and takes the write lock (openStore's
+        // BEGIN IMMEDIATE) without waiting on another connection, then writes once on its own.
+        const began = Date.now();
+        const s = openStore(location, STORE_SCHEMAS, 'existing');
+        try {
+          expect(s.write((tx) => tx.claimPosition())).toBeGreaterThan(0);
+        } finally {
+          s.close();
+        }
+        expect(Date.now() - began).toBeLessThan(STORE_LOCK_WAIT_MS);
+        return code;
+      };
+
+      try {
+        // 1. One early signal: exit 0, and the store is left closed and openable.
+        expect(await earlyRun('service (early signal)')).toBe(0);
+
+        // 2. Ten more, each in a fresh folder: every one exits 0.
         const codes: number[] = [];
         for (let i = 0; i < 10; i++) codes.push(await earlyRun(`service (early signal ${i + 1})`));
         expect(codes).toEqual(Array(10).fill(0));
 
         // 3. After 'service started': one stop sequence, exit 0; a second signal during it changes nothing.
+        const config = freshConfig();
+        const location = config.ARCANUM_STORAGE;
         const p = spawnProduct(['service'], config, process.env);
         const err = watch(p.stderr);
         void new Response(p.stdout).text();
@@ -317,7 +337,7 @@ describe('app/starters', () => {
         openStore(location, STORE_SCHEMAS, 'existing').close();
       } finally {
         await m.close();
-        removeFolder(dir);
+        for (const dir of folders) removeFolder(dir);
       }
     },
     150_000,
