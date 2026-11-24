@@ -40,13 +40,24 @@ Both mount the one named volume `arcanum-data` read-write at the store folder an
 store file in it. No port is published, and no service has a fixed container name, so the
 deployment can run beside others on the same host.
 
-The Monobank token is never written into a file: it comes from the host environment. Set it in
-the shell that runs compose (for example with `read -rs ARCANUM_MONOBANK_TOKEN` followed by
-`export ARCANUM_MONOBANK_TOKEN`), then start the deployment:
+The Monobank token is never written into the repository: it comes from the host environment as
+`ARCANUM_MONOBANK_TOKEN`. Start the deployment with it set:
 
 ```sh
 docker compose up -d
 ```
+
+The token must be present for every `docker compose up` that recreates the containers (after a
+settings change or an image pull), not only the first: a recreate without it starts both services
+tokenless. It is best kept in a host secret file outside the repository, readable by its owner only
+(mode 600), and loaded by a small wrapper script before it calls docker compose, for example:
+
+```sh
+#!/bin/sh
+set -a; . /path/to/arcanum.env; set +a; docker compose "$@"
+```
+
+Alternatively, point an `env_file:` at a file that lives outside the repository.
 
 For push, layer the override file on top with a second `-f`:
 
