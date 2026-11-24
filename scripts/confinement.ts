@@ -139,6 +139,12 @@ function resolveRelative(moduleId: string, spec: string): string {
 
 interface Views { plain: string; code: string }
 
+// Keywords after which a '/' starts a regex literal rather than a division.
+const REGEX_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do',
+  'else', 'yield', 'await',
+]);
+
 // Two views of the text, both with line and block comments blanked to spaces (newlines kept, so
 // indices and lines stay put). `plain` keeps every string and template literal; `code` blanks a
 // literal's content unless that whole content is one identifier ('fetch', `process`), the shape
@@ -177,9 +183,45 @@ function views(text: string): Views {
     }
     piece(start, n, false);
   };
+  // The index of the last code character before the one being read (comments skipped), so a '/'
+  // can be told apart as a regex literal (expression position) or a division.
+  let last = -1;
+  const regexStarts = (): boolean => {
+    if (last === -1) return true;
+    const p = text[last]!;
+    if ('(,=:[!&|?{};+-*%<>~^'.includes(p)) return true;
+    if (!/[\w$]/.test(p)) return false;
+    let s = last;
+    while (s > 0 && /[\w$]/.test(text[s - 1]!)) s--;
+    return REGEX_KEYWORDS.has(text.slice(s, last + 1));
+  };
+  // Past a regex literal at `i`, honouring escapes and [...] classes, to its closing '/' and flags
+  // on the same line; false, with `i` unmoved, when the line holds no closing '/'.
+  const skipRegex = (): boolean => {
+    let k = i + 1;
+    let inClass = false;
+    while (k < n && text[k] !== '\n') {
+      const c = text[k];
+      if (c === '\\') k += 2;
+      else if (c === '[') { inClass = true; k++; }
+      else if (c === ']') { inClass = false; k++; }
+      else if (c === '/' && !inClass) {
+        k++;
+        while (k < n && /[A-Za-z]/.test(text[k]!)) k++;
+        i = k;
+        return true;
+      } else k++;
+    }
+    return false;
+  };
   while (i < n) {
     const c = text[i];
     const d = text[i + 1];
+    if (c !== '/' || (d !== '/' && d !== '*')) {
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+      if (c === '/' && regexStarts() && skipRegex()) { last = i - 1; continue; }
+    }
+    const before = i;
     if (c === '/' && d === '/') {
       const end = text.indexOf('\n', i);
       const stop = end === -1 ? n : end;
@@ -207,6 +249,7 @@ function views(text: string): Views {
     } else {
       i++;
     }
+    if (!(c === '/' && (d === '/' || d === '*'))) last = Math.max(before, Math.min(i, n) - 1);
   }
   return { plain: plain.join(''), code: code.join('') };
 }
