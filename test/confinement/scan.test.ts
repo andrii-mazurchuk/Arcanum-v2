@@ -143,5 +143,17 @@ describe('confinement/scan', () => {
     ]) {
       expect({ text, flagged: scan('interfaces/assistant-http', text).length > 0 }).toEqual({ text, flagged: true });
     }
+
+    // A member call .connect( on another object (the protocol server binding its transport) is
+    // allowed; connect on the socket modules, as a bare call or through Bun, is not.
+    expect(scan('interfaces/assistant-http', 'await server.connect(transport)')).toEqual([]);
+    for (const text of [
+      "import { connect } from 'node:net'",
+      'net.connect(80)',
+      'createConnection(80)',
+      'Bun.connect({})',
+    ]) {
+      expect({ text, flagged: scan('interfaces/assistant-http', text).length > 0 }).toEqual({ text, flagged: true });
+    }
   });
 });

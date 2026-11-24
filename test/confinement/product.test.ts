@@ -75,5 +75,11 @@ describe('confinement/product', () => {
     expect(scan('sync/service', '// we fetch nothing here')).toEqual([]);
     expect(rules('sync/service', "const f = globalThis['fetch']")).toContain('network');
     expect(scan('sync/service', '/* process.exit */')).toEqual([]);
+
+    // String cases: inside a literal a token counts only as the literal's whole content.
+    expect(scan('sync/jobs', "log('rates fetch failed source=' + id)")).toEqual([]);
+    expect(rules('sync/jobs', "const k = 'fetch'; globalThis[k]")).toContain('network');
+    expect(scan('release/judges', "'Bun ' + v")).toEqual([]);
+    expect(rules('sync/service', "Bun['serve']")).toContain('network');
   });
 });
