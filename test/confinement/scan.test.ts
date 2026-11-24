@@ -1,4 +1,4 @@
-// Confinement scan (S-252): scanProduct over one fixture module at a time, asserting the exact
+// Confinement scan (S-254): scanProduct over one fixture module at a time, asserting the exact
 // set of rules it reports, from scripts/confinement.
 //
 // The module is imported inside each test, not at the top: a missing module then fails each
