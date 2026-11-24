@@ -266,6 +266,21 @@ export function openStore(
     throw new StoreSchemaError(location, e);
   }
 
+  // Every statement prepared through this connection (by the store or by a slice through snap.db
+  // or tx.db) is remembered weakly, so close can finalise those still alive; db.query's cached
+  // statements are finalised by bun:sqlite's own close, and collected ones finalise themselves.
+  type Prepared = ReturnType<Database['prepare']>;
+  const prepared = new Set<WeakRef<Prepared>>();
+  const forget = new FinalizationRegistry<WeakRef<Prepared>>((ref) => prepared.delete(ref));
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((...args: Parameters<Database['prepare']>) => {
+    const stmt = prepare(...args);
+    const ref = new WeakRef(stmt);
+    prepared.add(ref);
+    forget.register(stmt, ref);
+    return stmt;
+  }) as Database['prepare'];
+
   const snap: Snapshot = {
     db,
     position: () => readPosition(db),
@@ -366,10 +381,12 @@ export function openStore(
       }
       return result;
     },
-    // Synchronous: bun:sqlite finalises every cached statement, then close(true) closes the
-    // connection or throws, so when it returns no handle on the location remains.
+    // Synchronous: finalises every statement prepared on the connection (bun:sqlite finalises the
+    // cached ones itself), then close(true) closes it or throws, so no handle on the location remains.
     close() {
       if (closed) return;
+      for (const ref of prepared) ref.deref()?.finalize();
+      prepared.clear();
       db.close(true);
       closed = true;
     },
