@@ -3,6 +3,7 @@
 // immediate write transactions; storage positions claimed inside the storing write; register rows;
 // the per-transaction listed mark and the store-held ask claim.
 
+import { fullGC } from 'bun:jsc';
 import { Database } from 'bun:sqlite';
 import { statSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -393,7 +394,7 @@ export function openStore(
         db.close(true);
       } catch {
         // bun:sqlite reports the busy close as a plain Error ('database is locked'), so any failure is retried once
-        Bun.gc(true);
+        fullGC();
         db.close(true);
       }
       closed = true;
