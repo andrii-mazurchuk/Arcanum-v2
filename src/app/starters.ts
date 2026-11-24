@@ -4,9 +4,9 @@
 // this module is first loaded. Part of the composition root: no earlier slice imports this module,
 // and it never imports from release/*.
 //
-// Product starters (S-206): the service, assistant, question and backfill starters, and the
-// existing-only answering opener the two front ends are handed uncalled. The only module that calls
-// composeAnswering, openStore, runService, runBackfillCommand and the two front-end entries.
+// Product starters (S-253): the service, assistant (stdio and HTTP), question and backfill starters,
+// and the existing-only answering opener the front ends are handed uncalled. The only module that
+// calls composeAnswering, openStore, runService, runBackfillCommand and the three front-end entries.
 
 import { createHealthFamily } from '../analysis/health';
 import { createMonthlyReportFamily } from '../analysis/monthly-report';
@@ -18,6 +18,7 @@ import { composeAnswering } from '../core/compose';
 import type { EnvelopeContributor, Family } from '../core/question';
 import { NoLocalCopyError, type SchemaInstaller, StoreLocationError, StoreSchemaError, openStore } from '../db';
 import { runAssistantFrontEnd } from '../interfaces/assistant-entry';
+import { runHttpAssistantFrontEnd } from '../interfaces/assistant-http';
 import type { AnsweringOpener, OpenedAnswering, OpenRefusal } from '../interfaces/handoff';
 import { runQuestionFrontEnd } from '../interfaces/question-entry';
 import { runBackfillCommand } from '../sync/backfill';
@@ -219,6 +220,16 @@ export function answeringOpener(location: string, record: StartContext['record']
 // service: composing it makes the store's installers and the families' registration the same as
 // in every answering command.
 const service: CommandStarter = async (ctx) => {
+  // From the first instruction, a termination or interrupt signal is latched, so none ever gets the
+  // runtime's default action; one latched before the stop handler is attached stops at the attach.
+  let latched = false;
+  let deliver: (() => void) | undefined;
+  const onSignal = (): void => {
+    latched = true;
+    deliver?.();
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
   checkBuiltSources();
   const location = locationOf(ctx) ?? '';
   const { store } = composeAnswering({
@@ -240,8 +251,8 @@ const service: CommandStarter = async (ctx) => {
     sleep,
     timers,
     onStopSignal: (h) => {
-      process.on('SIGTERM', h);
-      process.on('SIGINT', h);
+      if (latched) h();
+      else deliver = h;
     },
   });
 };
@@ -258,6 +269,24 @@ const assistant: CommandStarter = async (ctx) => {
     stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,
+  });
+};
+
+// Ungated; stop settles on the first termination or interrupt signal.
+const assistantHttp: CommandStarter = async (ctx) => {
+  checkBuiltSources();
+  const location = locationOf(ctx);
+  const stop = new Promise<void>((resolve) => {
+    process.on('SIGTERM', () => resolve());
+    process.on('SIGINT', () => resolve());
+  });
+  return runHttpAssistantFrontEnd({
+    record: ctx.record,
+    open: answeringOpener(location ?? '', ctx.record),
+    families: ANSWER_FAMILIES,
+    catalogue: ANSWER_CATALOGUE,
+    stderr: process.stderr,
+    stop,
   });
 };
 
@@ -297,4 +326,10 @@ const backfill: CommandStarter = async (ctx) => {
   });
 };
 
-export const PRODUCT_STARTERS: Omit<Starters, 'releaseCheck'> = Object.freeze({ service, assistant, question, backfill });
+export const PRODUCT_STARTERS: Omit<Starters, 'releaseCheck'> = Object.freeze({
+  service,
+  assistant,
+  assistantHttp,
+  question,
+  backfill,
+});
