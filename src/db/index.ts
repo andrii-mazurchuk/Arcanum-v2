@@ -1,4 +1,4 @@
-// Store (S-242): the one gateway to the local copy. One process-wide store, opened creating or
+// Store (S-257): the one gateway to the local copy. One process-wide store, opened creating or
 // existing-only, with every table installer in one write; synchronous read-only snapshots; whole
 // immediate write transactions; storage positions claimed inside the storing write; register rows;
 // the per-transaction listed mark and the store-held ask claim.
@@ -67,7 +67,7 @@ export interface Store {
   readonly location: string;
   readSnapshot<T>(body: (snap: Snapshot) => T): T; // one read-only transaction around body; body is synchronous
   write<T>(body: (tx: WriteTx) => T): T; // one whole write transaction; rolled back if body throws; on a file store, durable when it returns
-  close(): void;
+  close(): void; // synchronous: finalises every statement this store prepared, then closes the connection (bun:sqlite close(true)); when it returns, the process holds no handle on the location
 }
 
 export interface AskClaim {
@@ -327,6 +327,7 @@ export function openStore(
     },
   };
 
+  let closed = false;
   return {
     location,
     readSnapshot<T>(body: (snap: Snapshot) => T): T {
@@ -365,8 +366,12 @@ export function openStore(
       }
       return result;
     },
+    // Synchronous: bun:sqlite finalises every cached statement, then close(true) closes the
+    // connection or throws, so when it returns no handle on the location remains.
     close() {
-      db.close();
+      if (closed) return;
+      db.close(true);
+      closed = true;
     },
   };
 }
