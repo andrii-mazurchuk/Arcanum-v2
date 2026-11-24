@@ -3,8 +3,7 @@
 // immediate write transactions; storage positions claimed inside the storing write; register rows;
 // the per-transaction listed mark and the store-held ask claim.
 
-import { fullGC } from 'bun:jsc';
-import { Database } from 'bun:sqlite';
+import { constants, Database, type Statement } from 'bun:sqlite';
 import { statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { CurrencyCode, HoldingId, Instant, Position, SourceId } from '../core/primitives';
@@ -236,6 +235,22 @@ export function openStore(
     throw new StoreLocationError(location, 'cannot open');
   }
 
+  // bun:sqlite finalises only its cached statements (db.query's first 20 texts) on close, and a
+  // dropped statement is not finalised when collected, so every other statement prepared on this
+  // connection (by the store or by a slice through snap.db or tx.db) is held here and finalised
+  // when the transaction it was prepared in ends, and at close.
+  const prepared = new Set<Statement>();
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((...args: Parameters<Database['prepare']>) => {
+    const stmt = prepare(...args);
+    if ((args as unknown[])[2] !== constants.SQLITE_PREPARE_PERSISTENT) prepared.add(stmt);
+    return stmt;
+  }) as Database['prepare'];
+  const finalizePrepared = (): void => {
+    for (const stmt of prepared) stmt.finalize();
+    prepared.clear();
+  };
+
   if (isFile) {
     try {
       db.run('PRAGMA journal_mode = WAL');
@@ -263,24 +278,11 @@ export function openStore(
     } catch {
       // the transaction is already gone
     }
+    finalizePrepared();
     db.close();
     throw new StoreSchemaError(location, e);
   }
-
-  // Every statement prepared through this connection (by the store or by a slice through snap.db
-  // or tx.db) is remembered weakly, so close can finalise those still alive; db.query's cached
-  // statements are finalised by bun:sqlite's own close, and collected ones finalise themselves.
-  type Prepared = ReturnType<Database['prepare']>;
-  const prepared = new Set<WeakRef<Prepared>>();
-  const forget = new FinalizationRegistry<WeakRef<Prepared>>((ref) => prepared.delete(ref));
-  const prepare = db.prepare.bind(db);
-  db.prepare = ((...args: Parameters<Database['prepare']>) => {
-    const stmt = prepare(...args);
-    const ref = new WeakRef(stmt);
-    prepared.add(ref);
-    forget.register(stmt, ref);
-    return stmt;
-  }) as Database['prepare'];
+  finalizePrepared();
 
   const snap: Snapshot = {
     db,
@@ -353,6 +355,7 @@ export function openStore(
         db.run('PRAGMA query_only = ON');
         result = body(snap);
       } finally {
+        finalizePrepared();
         try {
           db.run('COMMIT');
         } finally {
@@ -371,9 +374,11 @@ export function openStore(
       try {
         result = body(tx);
       } catch (e) {
+        finalizePrepared();
         db.run('ROLLBACK');
         throw e;
       }
+      finalizePrepared();
       try {
         db.run('COMMIT');
       } catch (e) {
@@ -384,19 +389,10 @@ export function openStore(
     },
     // Synchronous: finalises every statement prepared on the connection (bun:sqlite finalises the
     // cached ones itself), then close(true) closes it or throws, so no handle on the location remains.
-    // A statement already collected but not yet swept still holds the connection busy: a full
-    // synchronous collection sweeps it (finalising it), and the second close(true) throws if it fails.
     close() {
       if (closed) return;
-      for (const ref of prepared) ref.deref()?.finalize();
-      prepared.clear();
-      try {
-        db.close(true);
-      } catch {
-        // bun:sqlite reports the busy close as a plain Error ('database is locked'), so any failure is retried once
-        fullGC();
-        db.close(true);
-      }
+      finalizePrepared();
+      db.close(true);
       closed = true;
     },
   };
