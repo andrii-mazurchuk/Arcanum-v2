@@ -1,4 +1,4 @@
-// Store (S-242): the one gateway to the local copy. One process-wide store, opened creating or
+// Store (S-257): the one gateway to the local copy. One process-wide store, opened creating or
 // existing-only, with every table installer in one write; synchronous read-only snapshots; whole
 // immediate write transactions; storage positions claimed inside the storing write; register rows;
 // the per-transaction listed mark and the store-held ask claim.
@@ -67,7 +67,7 @@ export interface Store {
   readonly location: string;
   readSnapshot<T>(body: (snap: Snapshot) => T): T; // one read-only transaction around body; body is synchronous
   write<T>(body: (tx: WriteTx) => T): T; // one whole write transaction; rolled back if body throws; on a file store, durable when it returns
-  close(): void;
+  close(): void; // synchronous: finalises every statement this store prepared, then closes the connection (bun:sqlite close(true)); when it returns, the process holds no handle on the location
 }
 
 export interface AskClaim {
@@ -266,6 +266,21 @@ export function openStore(
     throw new StoreSchemaError(location, e);
   }
 
+  // Every statement prepared through this connection (by the store or by a slice through snap.db
+  // or tx.db) is remembered weakly, so close can finalise those still alive; db.query's cached
+  // statements are finalised by bun:sqlite's own close, and collected ones finalise themselves.
+  type Prepared = ReturnType<Database['prepare']>;
+  const prepared = new Set<WeakRef<Prepared>>();
+  const forget = new FinalizationRegistry<WeakRef<Prepared>>((ref) => prepared.delete(ref));
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((...args: Parameters<Database['prepare']>) => {
+    const stmt = prepare(...args);
+    const ref = new WeakRef(stmt);
+    prepared.add(ref);
+    forget.register(stmt, ref);
+    return stmt;
+  }) as Database['prepare'];
+
   const snap: Snapshot = {
     db,
     position: () => readPosition(db),
@@ -327,6 +342,7 @@ export function openStore(
     },
   };
 
+  let closed = false;
   return {
     location,
     readSnapshot<T>(body: (snap: Snapshot) => T): T {
@@ -365,8 +381,14 @@ export function openStore(
       }
       return result;
     },
+    // Synchronous: finalises every statement prepared on the connection (bun:sqlite finalises the
+    // cached ones itself), then close(true) closes it or throws, so no handle on the location remains.
     close() {
-      db.close();
+      if (closed) return;
+      for (const ref of prepared) ref.deref()?.finalize();
+      prepared.clear();
+      db.close(true);
+      closed = true;
     },
   };
 }
