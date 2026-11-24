@@ -10,7 +10,6 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandStarter, StartContext } from '../app/main';
-import { ANSWER_CATALOGUE } from '../app/starters';
 import type { Json } from '../interfaces/render';
 import { ANSWER_BOUND_MS, type AskResult, type AssistantConnection, connectAssistant, coverageOf } from './assistant';
 import { type Dataset, FIRST_FILL_DAYS, type MonoTxn, RUN_LIMIT_MS, buildDataset, localDate, marker } from './dataset';
@@ -46,6 +45,13 @@ import {
   startSecondStandIn,
 } from './stand-ins';
 import { POLL_INTERVAL_MS, covers, monobankJobCalls, secondJobCalls, spacingMs, waitDeadlineMs, waitFor } from './waits';
+
+// The assistant's tools, named literally (spec ruling 2026-11-24: the check imports nothing from app/*).
+const ASSISTANT_TOOLS = [
+  'balance', 'jars', 'transaction_search', 'spending_breakdown', 'exchange_rates', 'foreign_spending',
+  'holdings', 'new_since_last_asked', 'trends', 'behaviour_patterns', 'weekly_report', 'monthly_report',
+  'health_signals',
+] as const;
 
 export const STOP_BOUND_MS = 120_000; // a stopped service must exit within this, else it is killed; where signal steps apply, the step fails
 
@@ -478,6 +484,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
   const serviceReady = async (): Promise<void> => {
     const until = Date.now() + READY_BOUND_MS;
     for (;;) {
+      if (stopped) throw new Stopped('run stopped');
       let pushOk = false;
       try {
         pushOk = (await fetch(`http://127.0.0.1:${pushPort}/${secret}`, { method: 'GET' })).status === 200;
@@ -488,6 +495,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
       if (Date.now() > until) {
         throw new HarnessFault(`${currentPhase.name}: the service was not ready within ${READY_BOUND_MS} ms (storage ${existsSync(`${folder}/arcanum.db`) ? 'present' : 'absent'}, push address check ${pushOk ? '200' : 'not 200'}) (harness fault)`);
       }
+      if (stopped) throw new Stopped('run stopped');
       await serviceSleep(250);
     }
   };
@@ -818,7 +826,7 @@ export const releaseCheck: CommandStarter = async (ctx: StartContext) => {
       }
       await withConnection(false, async (conn) => {
         const tools = await conn.listTools();
-        const missing = ANSWER_CATALOGUE.map((e) => e.tool).filter((t) => !tools.includes(t));
+        const missing = ASSISTANT_TOOLS.filter((t) => !tools.includes(t));
         if (missing.length > 0) fail(['complete_and_current', 'local_copy_only'], `P2 tools not listed: ${missing.join(', ')}`);
 
         const keys: PromiseKey[] = ['complete_and_current', 'local_copy_only'];
