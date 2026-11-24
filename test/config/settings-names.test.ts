@@ -1,4 +1,4 @@
-// Settings names (S-212): Monobank's declared settings group, exported by its source module as
+// Settings names (S-244): Monobank's declared settings group, exported by its source module as
 // `settingsGroup`, and the pure list of every setting name a group list produces, from
 // src/config/settings.
 //
@@ -37,23 +37,25 @@ describe('config/settings-names', () => {
     expect(MONO.extras.map((d: any) => d.key).sort()).toEqual(['PUSH_SECRET', 'PUSH_URL']);
     for (const d of MONO.extras) expect(d.default).toBe(null);
 
-    // 2. Ten distinct names: shared first, then ENABLED, BASE_URL, TOKEN, then extras in order.
+    // 2. Eleven distinct names: shared first, then ENABLED, BASE_URL, TOKEN, then extras in order.
     const n = settingNames([MONO]);
-    expect(n.length).toBe(10);
-    expect(new Set(n).size).toBe(10);
-    expect(n.slice(0, 8)).toEqual([
+    expect(n.length).toBe(11);
+    expect(new Set(n).size).toBe(11);
+    expect(n.slice(0, 9)).toEqual([
       'ARCANUM_STORAGE',
       'ARCANUM_FIRST_FILL_DAYS',
       'ARCANUM_POLL_MINUTES',
       'ARCANUM_PUSH_PORT',
       'ARCANUM_TIME_ZONE',
+      'ARCANUM_MCP_PORT',
       'ARCANUM_MONOBANK_ENABLED',
       'ARCANUM_MONOBANK_BASE_URL',
       'ARCANUM_MONOBANK_TOKEN',
     ]);
-    expect(n.slice(8)).toEqual(MONO.extras.map((d: any) => sourceSettingName('monobank', d.key)));
+    expect(n.slice(9)).toEqual(MONO.extras.map((d: any) => sourceSettingName('monobank', d.key)));
     expect([...n].sort()).toEqual([
       'ARCANUM_FIRST_FILL_DAYS',
+      'ARCANUM_MCP_PORT',
       'ARCANUM_MONOBANK_BASE_URL',
       'ARCANUM_MONOBANK_ENABLED',
       'ARCANUM_MONOBANK_PUSH_SECRET',
@@ -83,8 +85,8 @@ describe('config/settings-names', () => {
       'ARCANUM_DUP_TOKEN',
       'ARCANUM_DUP_TOKEN',
     ]);
-    expect(d.length).toBe(9);
-    expect(new Set(d).size).toBe(8);
+    expect(d.length).toBe(10);
+    expect(new Set(d).size).toBe(9);
 
     // 5. Absent push settings are defaulted to null under their own names.
     const r = loadSettings({ ARCANUM_STORAGE: ':memory:', ARCANUM_MONOBANK_TOKEN: 't' }, [MONO]) as any;
