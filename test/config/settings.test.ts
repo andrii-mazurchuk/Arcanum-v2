@@ -1,4 +1,4 @@
-// Settings (S-212): the total loader over the groups it is handed, the frozen four-state record,
+// Settings (S-244): the total loader over the groups it is handed, the frozen four-state record,
 // the shared setting parsers and defaults, per-source settings groups and the question view, from
 // src/config/settings; Monobank's group is the `settingsGroup` its source module exports.
 //
@@ -72,8 +72,16 @@ describe('config/settings', () => {
       pollMinutes: 'ARCANUM_POLL_MINUTES',
       pushPort: 'ARCANUM_PUSH_PORT',
       timeZone: 'ARCANUM_TIME_ZONE',
+      mcpPort: 'ARCANUM_MCP_PORT',
     });
-    expect(Object.keys(SHARED_NAMES)).toEqual(['storage', 'firstFillDays', 'pollMinutes', 'pushPort', 'timeZone']);
+    expect(Object.keys(SHARED_NAMES)).toEqual([
+      'storage',
+      'firstFillDays',
+      'pollMinutes',
+      'pushPort',
+      'timeZone',
+      'mcpPort',
+    ]);
 
     // 2. Absent: storage is missing, the others take their defaults.
     const empty = loadSettings({}, groups) as any;
@@ -87,6 +95,7 @@ describe('config/settings', () => {
       name: 'ARCANUM_TIME_ZONE',
       value: DEFAULT_TIME_ZONE,
     });
+    expect(empty.shared.mcpPort).toEqual({ state: 'defaulted', name: 'ARCANUM_MCP_PORT', value: 8090 });
 
     // 3. A bad value stays bad; an empty storage value is present, not absent.
     const bad = loadSettings({ ARCANUM_POLL_MINUTES: '0', ARCANUM_STORAGE: '' }, groups) as any;
@@ -105,6 +114,18 @@ describe('config/settings', () => {
     expect(settingValue(mem.shared.storage)).toBe(MEMORY_LOCATION);
     expect(settingValue(empty.shared.firstFillDays)).toBe(90);
     expect(settingValue(empty.shared.storage)).toBeUndefined();
+
+    // 6. The MCP port is 1..65535 in plain digits; a bad value stays bad, never defaulted.
+    const MCP = 'ARCANUM_MCP_PORT';
+    const mcp = (raw: string): any => (loadSettings({ [MCP]: raw }, groups) as any).shared.mcpPort;
+    for (const [raw, value] of [
+      ['8091', 8091],
+      ['1', 1],
+      ['65535', 65535],
+    ] as const) {
+      expect(mcp(raw)).toEqual({ state: 'given', name: MCP, value });
+    }
+    for (const raw of ['0', '65536', '-1', '80.5', '', 'x']) expectBad(mcp(raw), MCP, raw);
   });
 
   describe('loader is total and frozen', () => {
