@@ -1,8 +1,8 @@
-// Confinement scan (S-211): reads every product module under src/ and reports each use of a
+// Confinement scan (S-255): reads every product module under src/ and reports each use of a
 // loader, network, file, process, database or environment facility, of test code, of a
 // development-only dependency or of the release-check part, outside the allowed lists below.
-// Test code: never imported by product code. Rules match the whole text, comments and strings
-// included.
+// Test code: never imported by product code. Comments are removed before matching; inside a
+// string or template literal a token counts only as the literal's whole content.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
@@ -11,9 +11,10 @@ export interface ScanFile { moduleId: string; text: string } // moduleId: path u
 export type Rule = 'loader' | 'network' | 'file' | 'process' | 'sqlite' | 'env' | 'test-import' | 'dev-dependency' | 'release-import';
 export interface Violation { moduleId: string; rule: Rule; match: string; line: number } // line is 1-based
 
-export const NETWORK_ALLOWED: readonly string[] = ['sources/*/client', 'app/network', 'service/push-receiver', 'release/*'];
-export const FILE_PROCESS_ALLOWED: readonly string[] = ['release/*'];
-export const SQLITE_ALLOWED: readonly string[] = ['store/store'];
+export const NETWORK_ALLOWED: readonly string[] = ['sources/*/client', 'app/network', 'sync/push-receiver', 'interfaces/assistant-http', 'release/*'];
+export const FILE_ALLOWED: readonly string[] = ['release/*', 'db/index'];
+export const PROCESS_ALLOWED: readonly string[] = ['release/*'];
+export const SQLITE_ALLOWED: readonly string[] = ['db/index'];
 export const ENV_ALLOWED: readonly string[] = ['app/bin'];
 export const RELEASE_IMPORT_ALLOWED: readonly string[] = ['release/*', 'app/bin'];
 export const LOADER_TOKENS = ['require', 'createRequire', 'getBuiltinModule', 'eval', 'Function', 'dlopen'] as const;
@@ -136,6 +137,104 @@ function resolveRelative(moduleId: string, spec: string): string {
   return posix.normalize(posix.join('src', posix.dirname(moduleId), spec));
 }
 
+interface Views { plain: string; code: string }
+
+// Two views of the text, both with line and block comments blanked to spaces (newlines kept, so
+// indices and lines stay put). `plain` keeps every string and template literal; `code` blanks a
+// literal's content unless that whole content is one identifier ('fetch', `process`), the shape
+// aliasing takes, so a word inside prose is not matched. `${...}` inside a template stays code.
+function views(text: string): Views {
+  const plain = text.split('');
+  const code = text.split('');
+  const blank = (out: string[], from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n' && out[k] !== '\r') out[k] = ' ';
+  };
+  const n = text.length;
+  const braces: number[] = []; // per open `${`, the brace depth inside it
+  let i = 0;
+  // The content of a literal piece from `from` to `to`; `whole` when it is the literal's whole
+  // content, so an identifier there is kept.
+  const piece = (from: number, to: number, whole: boolean): void => {
+    if (whole && /^[A-Za-z_$][\w$]*$/.test(text.slice(from, to))) return;
+    blank(code, from, to);
+  };
+  const skipQuoted = (q: string): void => {
+    const start = ++i;
+    while (i < n && text[i] !== q && text[i] !== '\n') i += text[i] === '\\' ? 2 : 1;
+    piece(start, Math.min(i, n), true);
+    i++;
+  };
+  // Inside a template literal from `start`: returns after its closing backtick or after an
+  // opening `${`; `first` tells whether this piece began at the opening backtick.
+  const skipTemplate = (first: boolean): void => {
+    const start = i;
+    while (i < n) {
+      const c = text[i];
+      if (c === '\\') i += 2;
+      else if (c === '`') { piece(start, i, first); i++; return; }
+      else if (c === '$' && text[i + 1] === '{') { piece(start, i, false); i += 2; braces.push(0); return; }
+      else i++;
+    }
+    piece(start, n, false);
+  };
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === '/' && d === '/') {
+      const end = text.indexOf('\n', i);
+      const stop = end === -1 ? n : end;
+      blank(plain, i, stop);
+      blank(code, i, stop);
+      i = stop;
+    } else if (c === '/' && d === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      blank(plain, i, stop);
+      blank(code, i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"') {
+      skipQuoted(c);
+    } else if (c === '`') {
+      i++;
+      skipTemplate(true);
+    } else if (c === '{' && braces.length > 0) {
+      braces[braces.length - 1]!++;
+      i++;
+    } else if (c === '}' && braces.length > 0) {
+      i++;
+      if (braces[braces.length - 1] === 0) { braces.pop(); skipTemplate(false); }
+      else braces[braces.length - 1]!--;
+    } else {
+      i++;
+    }
+  }
+  return { plain: plain.join(''), code: code.join('') };
+}
+
+// The HTTP assistant front end may name the server module to listen, never anything outbound.
+const LISTEN_ONLY = 'interfaces/assistant-http';
+
+// Outbound capability in the listen-only module: fetch, WebSocket, createConnection, Bun.connect
+// or Bun.listen, the socket modules, connect on them or as a bare call, or a source client import.
+function outboundHits(moduleId: string, code: string, plain: string, specs: readonly Specifier[]): Hit[] {
+  const hits: Hit[] = [
+    ...word(code, 'fetch'),
+    ...word(code, 'WebSocket'),
+    ...word(code, 'createConnection'),
+    ...bunMembers(code, ['connect', 'listen']),
+    ...named(plain, specs, ['net', 'tls', 'dgram']),
+  ];
+  for (const m of all(code, /\b(net|tls|dgram)\s*\.\s*connect\b/)) hits.push({ match: m[0], index: m.index });
+  for (const m of all(code, /\bconnect\s*\(/)) {
+    if (!/\.\s*$/.test(code.slice(0, m.index))) hits.push({ match: m[0], index: m.index });
+  }
+  for (const s of specs) {
+    const p = isRelative(s.spec) ? resolveRelative(moduleId, s.spec) : s.spec;
+    if (/(^|\/)src\/sources(\/|$)/.test(p)) hits.push({ match: s.match, index: s.index });
+  }
+  return hits;
+}
+
 function loaderHits(text: string): Hit[] {
   const hits: Hit[] = LOADER_TOKENS.flatMap((t) => word(text, t));
   for (const m of all(text, /constructor\s*\.\s*constructor/)) hits.push({ match: m[0], index: m.index });
@@ -143,11 +242,12 @@ function loaderHits(text: string): Hit[] {
   return hits;
 }
 
-function envHits(text: string): Hit[] {
+// `anyMember`: a module in PROCESS_ALLOWED may use every member of the process object but env.
+function envHits(text: string, anyMember: boolean): Hit[] {
   const hits: Hit[] = [];
   for (const h of word(text, 'process')) {
     const m = memberAfter(text, h.index + h.match.length);
-    if (m !== null && (PROCESS_MEMBERS_ALLOWED as readonly string[]).includes(m)) continue;
+    if (m !== null && (anyMember ? m !== 'env' : (PROCESS_MEMBERS_ALLOWED as readonly string[]).includes(m))) continue;
     hits.push(m === null ? h : { match: `process.${m}`, index: h.index });
   }
   for (const h of word(text, 'Bun')) {
@@ -162,40 +262,52 @@ function envHits(text: string): Hit[] {
 
 export function scanProduct(files: readonly ScanFile[], devDependencies: readonly string[]): Violation[] {
   const out: Violation[] = [];
-  for (const { moduleId, text } of files) {
-    const lineAt = (index: number): number => text.slice(0, index).split('\n').length;
+  for (const { moduleId, text: raw } of files) {
+    const { plain, code } = views(raw);
+    const lineAt = (index: number): number => raw.slice(0, index).split('\n').length;
     const add = (rule: Rule, hits: readonly Hit[]): void => {
       for (const h of [...hits].sort((a, b) => a.index - b.index)) {
         out.push({ moduleId, rule, match: h.match, line: lineAt(h.index) });
       }
     };
-    const specs = moduleSpecifiers(text);
+    const specs = moduleSpecifiers(plain);
 
-    add('loader', loaderHits(text));
+    add('loader', loaderHits(code));
 
     if (!allowed(NETWORK_ALLOWED, moduleId)) {
-      add('network', [...NETWORK_TOKENS.flatMap((t) => word(text, t)), ...named(text, specs, NETWORK_SPECIFIERS)]);
+      add('network', [...NETWORK_TOKENS.flatMap((t) => word(code, t)), ...named(plain, specs, NETWORK_SPECIFIERS)]);
+    } else if (moduleId === LISTEN_ONLY) {
+      add('network', outboundHits(moduleId, code, plain, specs));
     }
 
-    if (!allowed(FILE_PROCESS_ALLOWED, moduleId)) {
-      add('file', [...named(text, specs, FILE_SPECIFIERS), ...bunMembers(text, BUN_FILE_MEMBERS)]);
-      add('process', [...named(text, specs, PROCESS_SPECIFIERS), ...bunMembers(text, BUN_PROCESS_MEMBERS)]);
-    }
+    const fileAllowed = allowed(FILE_ALLOWED, moduleId);
+    const processAllowed = allowed(PROCESS_ALLOWED, moduleId);
+    if (!fileAllowed) add('file', [...named(plain, specs, FILE_SPECIFIERS), ...bunMembers(code, BUN_FILE_MEMBERS)]);
+    if (!processAllowed) add('process', [...named(plain, specs, PROCESS_SPECIFIERS), ...bunMembers(code, BUN_PROCESS_MEMBERS)]);
 
     if (!allowed(SQLITE_ALLOWED, moduleId)) {
-      const hits = named(text, specs, SQLITE_SPECIFIERS, true);
+      const hits = named(plain, specs, SQLITE_SPECIFIERS, true);
       for (const re of [/\battach\s+(database\b|['"`?:@$])/i, /\bvacuum\s+into\b/i]) {
-        for (const m of all(text, re)) hits.push({ match: m[0], index: m.index });
+        for (const m of all(plain, re)) hits.push({ match: m[0], index: m.index });
       }
       add('sqlite', hits);
     }
 
-    if (!allowed(ENV_ALLOWED, moduleId)) add('env', envHits(text));
+    // The 'process' and 'node:process' specifiers name the process object too.
+    if (!allowed(ENV_ALLOWED, moduleId)) {
+      const hits = envHits(code, processAllowed);
+      for (const h of named(plain, specs, ['process'])) {
+        if (!hits.some((x) => x.index >= h.index && x.index < h.index + h.match.length)) hits.push(h);
+      }
+      add('env', hits);
+    }
 
+    // A module in FILE_ALLOWED may import the repository's package.json (a file read).
     add('test-import', specs.filter((s) => {
       if (s.spec === 'bun:test') return true;
       if (!isRelative(s.spec)) return false;
       const p = resolveRelative(moduleId, s.spec);
+      if (fileAllowed && p === 'package.json') return false;
       return !p.startsWith('src/');
     }));
 
