@@ -1,7 +1,8 @@
-// Image and run definitions (S-241): the Dockerfile is a frozen production install on the pinned
+// Image and run definitions (S-246): the Dockerfile is a frozen production install on the pinned
 // Bun that checks its own Bun and starts the service directly, with no setting baked in; the
-// compose service keeps its store under /data, passes the token without a value, publishes only
-// the push port and restarts unless stopped.
+// poll-only compose runs the service and the HTTP assistant connection from one image on one
+// read-write volume, publishing no port and fixing no container name; the push override publishes
+// only the push port.
 //
 // Files are read inside the test, not at the top: a missing file then fails the test on its own
 // instead of failing the whole file at load.
@@ -72,25 +73,44 @@ describe('repository/container', () => {
     expect(docker.some((line) => line.startsWith('ENV'))).toBe(false);
     expect(dockerText).not.toContain('ARCANUM_');
 
+    // compose.yaml: poll-only.
     const text = read('compose.yaml');
     const lines = text.split(/\r?\n/);
     const has = (re: RegExp): boolean => lines.some((line) => re.test(line));
+    const count = (re: RegExp): number => lines.filter((line) => re.test(line)).length;
 
     expect(has(/^\s+arcanum:\s*$/)).toBe(true);
-    expect(has(/^\s*build:\s*\.\s*$/)).toBe(true);
+    expect(has(/^\s+arcanum-mcp:\s*$/)).toBe(true);
+    expect(count(/^\s*build:\s*\.\s*$/)).toBe(2);
 
-    expect(has(/^\s*ARCANUM_STORAGE:\s*\/data\/arcanum\.db\s*$/)).toBe(true);
+    expect(count(/^\s*ARCANUM_STORAGE:\s*\/data\/arcanum\.db\s*$/)).toBe(2);
 
     expect(has(/^\s*(-\s*)?ARCANUM_MONOBANK_TOKEN:?\s*$/)).toBe(true);
     expect(has(/ARCANUM_MONOBANK_TOKEN\s*[:=]\s*\S/)).toBe(false);
+    expect(has(/^\s*(-\s*)?ARCANUM_MCP_PORT:?\s*$/)).toBe(true);
+    expect(has(/ARCANUM_MCP_PORT\s*[:=]\s*\S/)).toBe(false);
 
-    expect(publishedPorts(lines)).toEqual(['8080:8080']);
-    expect(text.match(/\d+:\d+/g) ?? []).toEqual(['8080:8080']);
+    expect(has(/^\s*command:\s*\[\s*"bun",\s*"src\/app\/bin\.ts",\s*"mcp-http"\s*\]\s*$/)).toBe(true);
 
-    expect(text).toContain('arcanum-data:/data');
+    expect(has(/^\s*ports:/)).toBe(false);
+    expect(text.match(/\d+:\d+/g) ?? []).toEqual([]);
+
+    expect(lines.some((line) => line.includes('container_name'))).toBe(false);
+
+    expect(text.split('arcanum-data:/data').length - 1).toBe(2);
+    expect(lines.some((line) => line.includes(':ro'))).toBe(false);
     const volumes = lines.indexOf('volumes:');
     expect(volumes).toBeGreaterThanOrEqual(0);
     expect(lines.slice(volumes + 1).find((line) => line.trim() !== '')).toMatch(/^\s+arcanum-data:\s*$/);
-    expect(has(/^\s*restart:\s*unless-stopped\s*$/)).toBe(true);
+    expect(count(/^\s*restart:\s*unless-stopped\s*$/)).toBe(2);
+
+    // compose.push.yaml: the push override, for arcanum only.
+    const pushText = read('compose.push.yaml');
+    const pushLines = pushText.split(/\r?\n/);
+    expect(pushLines.some((line) => /^\s+arcanum:\s*$/.test(line))).toBe(true);
+    expect(pushLines.some((line) => /^\s+arcanum-mcp:\s*$/.test(line))).toBe(false);
+    expect(publishedPorts(pushLines)).toEqual(['8080:8080']);
+    expect(pushText.match(/\d+:\d+/g) ?? []).toEqual(['8080:8080']);
+    expect(pushLines.some((line) => line.includes('container_name'))).toBe(false);
   });
 });
