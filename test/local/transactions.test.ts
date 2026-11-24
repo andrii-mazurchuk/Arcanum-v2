@@ -392,28 +392,38 @@ describe('local/transactions', () => {
       type Query = Parameters<typeof selectTransactions>[1];
       const positions = (q: Query): number[] =>
         store.readSnapshot((s) => selectTransactions(s.db, q).map((r) => r.position));
-      // An added bound returns exactly the rows of the read without it that satisfy it, in order.
-      const narrows = (base: Query, bound: Query, keep: (p: number) => boolean) => {
-        expect(positions(bound)).toEqual(positions(base).filter(keep));
+      // A read with an added bound returns exactly the rows of the same read without that bound
+      // and without any limit that satisfy it, in order, cut to the read's limit when it has one.
+      const narrows = (read: Query, base: Query, keep: (p: number) => boolean) => {
+        const { limit: _limit, ...unlimited } = base;
+        const expected = positions(unlimited).filter(keep);
+        expect(positions(read)).toEqual(
+          read.limit === undefined ? expected : expected.slice(0, read.limit),
+        );
       };
 
       // 1. The category bound is applied before limit.
       const isGroceries = (p: number) => p === 1 || p === 3;
-      expect(
-        positions({ order: 'position', category: 'Groceries & Supermarkets', limit: 1 } as Query),
-      ).toEqual([1]);
-      expect(positions({ order: 'position', category: 'Groceries & Supermarkets' } as Query)).toEqual(
-        [1, 3],
-      );
-      narrows(
-        { order: 'position' },
-        { order: 'position', category: 'Groceries & Supermarkets' } as Query,
-        isGroceries,
-      );
+      const isFastFood = (p: number) => p === 2 || p === 4;
+      const groceriesFirst = {
+        order: 'position',
+        category: 'Groceries & Supermarkets',
+        limit: 1,
+      } as Query;
+      const groceriesAll = { order: 'position', category: 'Groceries & Supermarkets' } as Query;
+      const fastFoodFirst = { order: 'position', category: 'Fast Food', limit: 1 } as Query;
+      expect(positions(groceriesFirst)).toEqual([1]);
+      expect(positions(groceriesAll)).toEqual([1, 3]);
+      // A category applied after the limit would cut to position 1 first and give [].
+      expect(positions(fastFoodFirst)).toEqual([2]);
+      narrows(groceriesFirst, { order: 'position', limit: 1 }, isGroceries);
+      narrows(groceriesAll, { order: 'position' }, isGroceries);
+      narrows(fastFoodFirst, { order: 'position', limit: 1 }, isFastFood);
 
       // 2. With no listed marks every row is unlisted.
-      expect(positions({ order: 'position', unlistedOnly: true })).toEqual([1, 2, 3, 4]);
-      narrows({ order: 'position' }, { order: 'position', unlistedOnly: true }, () => true);
+      const unlistedAll: Query = { order: 'position', unlistedOnly: true };
+      expect(positions(unlistedAll)).toEqual([1, 2, 3, 4]);
+      narrows(unlistedAll, { order: 'position' }, () => true);
 
       // 3. Positions 1 and 4 marked listed through the store's release of a claim listing them.
       store.write((tx: WriteTx) => {
@@ -421,20 +431,16 @@ describe('local/transactions', () => {
         expect(tx.releaseClaim('new', 'tok', [1, 4]).released).toBe(true);
       });
       const unlisted = (p: number) => p === 2 || p === 3;
-      expect(positions({ order: 'position', unlistedOnly: true })).toEqual([2, 3]);
-      expect(positions({ order: 'position', unlistedOnly: true, limit: 1 })).toEqual([2]);
-      expect(positions({ order: 'position', unlistedOnly: true, upToPosition: 2 })).toEqual([2]);
-      narrows({ order: 'position' }, { order: 'position', unlistedOnly: true }, unlisted);
-      narrows(
-        { order: 'position', upToPosition: 2 },
-        { order: 'position', unlistedOnly: true, upToPosition: 2 },
-        unlisted,
-      );
-      narrows(
-        { order: 'position', unlistedOnly: true },
-        { order: 'position', unlistedOnly: true, upToPosition: 2 },
-        (p) => p <= 2,
-      );
+      const unlistedFirst: Query = { order: 'position', unlistedOnly: true, limit: 1 };
+      const unlistedUpTo2: Query = { order: 'position', unlistedOnly: true, upToPosition: 2 };
+      expect(positions(unlistedAll)).toEqual([2, 3]);
+      expect(positions(unlistedFirst)).toEqual([2]);
+      expect(positions(unlistedUpTo2)).toEqual([2]);
+      narrows(unlistedAll, { order: 'position' }, unlisted);
+      narrows(unlistedFirst, { order: 'position', limit: 1 }, unlisted);
+      narrows(unlistedFirst, unlistedAll, () => true);
+      narrows(unlistedUpTo2, { order: 'position', upToPosition: 2 }, unlisted);
+      narrows(unlistedUpTo2, unlistedAll, (p) => p <= 2);
 
       // 4. A settled replacement of row 1 (same key) keeps its position, so it stays listed.
       store.write((tx: WriteTx) =>
