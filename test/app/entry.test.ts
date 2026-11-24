@@ -1,6 +1,6 @@
-// Process entry (S-228): main's dispatch on the first word, which commands it gates (service,
-// backfill, release-check) and what it hands each starter; hostVariables; and a rejecting starter
-// becoming one stderr line and exit 1.
+// Process entry (S-249): main's dispatch on the first word, which commands it gates (service,
+// backfill, release-check) and what it hands each starter, mcp-http included; hostVariables; and a
+// rejecting starter becoming one stderr line and exit 1.
 //
 // The modules are imported inside each test, not at the top: a missing module then fails each test
 // on its own instead of failing the whole file at load.
@@ -17,13 +17,27 @@ type Ctx = {
   host: Readonly<Record<string, string>>;
   io: unknown;
 };
-type Name = 'service' | 'assistant' | 'question' | 'backfill' | 'releaseCheck';
+type Name = 'service' | 'assistant' | 'assistantHttp' | 'question' | 'backfill' | 'releaseCheck';
 
-const CODES: Record<Name, number> = { service: 10, assistant: 11, question: 12, backfill: 13, releaseCheck: 14 };
+const CODES: Record<Name, number> = {
+  service: 10,
+  assistant: 11,
+  assistantHttp: 15,
+  question: 12,
+  backfill: 13,
+  releaseCheck: 14,
+};
 
 // Stub starters, each recording its ctx and resolving its own code unless overridden.
 function stubs(overrides: Partial<Record<Name, (ctx: Ctx) => Promise<number>>> = {}) {
-  const calls: Record<Name, Ctx[]> = { service: [], assistant: [], question: [], backfill: [], releaseCheck: [] };
+  const calls: Record<Name, Ctx[]> = {
+    service: [],
+    assistant: [],
+    assistantHttp: [],
+    question: [],
+    backfill: [],
+    releaseCheck: [],
+  };
   const make = (name: Name) => async (ctx: Ctx) => {
     calls[name].push(ctx);
     const o = overrides[name];
@@ -32,6 +46,7 @@ function stubs(overrides: Partial<Record<Name, (ctx: Ctx) => Promise<number>>> =
   const starters = {
     service: make('service'),
     assistant: make('assistant'),
+    assistantHttp: make('assistantHttp'),
     question: make('question'),
     backfill: make('backfill'),
     releaseCheck: make('releaseCheck'),
@@ -207,5 +222,29 @@ describe('app/main', () => {
       expect(c.err).toEqual(['x']);
       expect(s.calls.service.length).toBe(1);
     }
+  });
+
+  test('mcp-http dispatch', async () => {
+    const { main } = await entry();
+    const { BUILT_GROUPS } = await sources();
+
+    // Every starter resolves 7, so the exit code alone cannot tell which one ran.
+    const seven = async () => 7;
+    const s = stubs({
+      service: seven,
+      assistant: seven,
+      assistantHttp: seven,
+      question: seven,
+      backfill: seven,
+      releaseCheck: seven,
+    });
+    const c = collectingIo();
+    // Ungated, though ARCANUM_STORAGE and the Monobank token are absent.
+    expect(await main(['mcp-http'], {}, BUILT_GROUPS, s.starters as any, c.io)).toBe(7);
+    expect(s.calls.assistantHttp.length).toBe(1);
+    expect(s.calls.assistantHttp[0]!.sources).toEqual([]);
+    expect(s.calls.assistantHttp[0]!.args).toEqual([]);
+    expect(s.total()).toBe(1);
+    expect(c.err).toEqual([]);
   });
 });
