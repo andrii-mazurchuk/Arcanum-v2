@@ -1,7 +1,9 @@
-// Product starters (S-206, src/app/starters): answeringOpener opens only an existing local copy and
+// Product starters (S-253, src/app/starters): answeringOpener opens only an existing local copy and
 // maps open faults to the two refusals; the question command answers over a store the service's
-// installer list created; the service command creates its store and stops with exit 0 on SIGTERM.
-// The child processes run the real process entry through the spawn helper.
+// installer list created; the service command creates its store and stops with exit 0 on SIGTERM,
+// even when the signal arrives before it has started; the HTTP assistant command answers tools/list
+// over POST /mcp and stops with exit 0. The child processes run the real process entry through the
+// spawn helper.
 //
 // The modules are imported inside each test, not at the top: a missing module then fails each test
 // on its own instead of failing the whole file at load.
@@ -45,6 +47,53 @@ async function exitWithin(p: { exited: Promise<number>; signal(s: string): void 
     throw new Error(`${what} did not exit within ${ms} ms`);
   }
   return code;
+}
+
+// Reads a child's stream as it arrives, so a test can wait for a line while the child runs.
+function watch(stream: ReadableStream<Uint8Array>) {
+  let text = '';
+  const decoder = new TextDecoder();
+  const done = (async () => {
+    for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) text += decoder.decode(chunk, { stream: true });
+    text += decoder.decode();
+    return text;
+  })();
+  return {
+    text: () => text,
+    done,
+    // Resolves true once the text contains what, false after ms or when the stream ends without it.
+    async waitFor(what: string, ms: number): Promise<boolean> {
+      const deadline = Date.now() + ms;
+      let ended = false;
+      void done.then(() => {
+        ended = true;
+      });
+      while (!text.includes(what)) {
+        if (ended || Date.now() >= deadline) return text.includes(what);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return true;
+    },
+  };
+}
+
+// A port nothing listens on right now.
+function freePort(): number {
+  const server = Bun.serve({ port: 0, fetch: () => new Response('') });
+  const port = server.port as number;
+  server.stop(true);
+  return port;
+}
+
+// True when something answers HTTP on the loopback port.
+async function listensOn(port: number): Promise<boolean> {
+  try {
+    await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', body: '{}', signal: AbortSignal.timeout(5_000) });
+    return true;
+  } catch (e) {
+    // Accepted but never answered is still a listener; a refused connection is not.
+    return (e as Error)?.name === 'TimeoutError';
+  }
 }
 
 describe('app/starters', () => {
@@ -200,6 +249,142 @@ describe('app/starters', () => {
       } finally {
         await m.close();
         removeFolder(dir);
+      }
+    },
+    80_000,
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'service stops on an early signal',
+    async () => {
+      const { STORE_SCHEMAS } = await starters();
+      const { NoLocalCopyError, openStore } = await db();
+      const { buildDataset } = await dataset();
+      const { startMonobankStandIn } = await standIns();
+      const { spawnProduct } = await spawn();
+
+      const ds = buildDataset(Math.floor(Date.now() / 1000) * 1000, 'svcearly');
+      const m = await startMonobankStandIn(ds, 't', Date.now);
+      const dir = mkdtempSync(join(tmpdir(), 'arcanum-starters-early-'));
+      try {
+        const location = join(dir, 'a.db');
+        // The push receiver on any free port, so repeated starts never contend for the default one.
+        const config = {
+          ARCANUM_STORAGE: location,
+          ARCANUM_MONOBANK_TOKEN: 't',
+          ARCANUM_MONOBANK_BASE_URL: m.baseAddress,
+          ARCANUM_PUSH_PORT: '0',
+        };
+
+        // Signalled as soon as the pid is known, before any stderr line.
+        const earlyRun = async (what: string): Promise<number> => {
+          const p = spawnProduct(['service'], config, process.env);
+          expect(p.pid).toBeGreaterThan(0);
+          p.signal('SIGTERM');
+          const err = watch(p.stderr);
+          void new Response(p.stdout).text();
+          const code = await exitWithin(p, STOP_BOUND_MS, what);
+          if (code !== 0) throw new Error(`${what} exited ${code} (143 is death by the default action): ${await err.done}`);
+          return code;
+        };
+
+        // 1. One early signal: exit 0, and the store is left openable or absent, never locked.
+        expect(await earlyRun('service (early signal)')).toBe(0);
+        // Opened or no local copy; a lock wait surfaces as the store's busy error and fails here.
+        try {
+          openStore(location, STORE_SCHEMAS, 'existing').close();
+        } catch (e) {
+          if (!(e instanceof NoLocalCopyError)) throw e;
+        }
+
+        // 2. Ten in a row, no delay: every one exits 0.
+        const codes: number[] = [];
+        for (let i = 0; i < 10; i++) codes.push(await earlyRun(`service (early signal ${i + 1})`));
+        expect(codes).toEqual(Array(10).fill(0));
+
+        // 3. After 'service started': one stop sequence, exit 0; a second signal during it changes nothing.
+        const p = spawnProduct(['service'], config, process.env);
+        const err = watch(p.stderr);
+        void new Response(p.stdout).text();
+        const started = await err.waitFor('service started', STOP_BOUND_MS);
+        if (!started) p.signal('SIGKILL');
+        expect(started).toBe(true);
+        p.signal('SIGTERM');
+        p.signal('SIGTERM');
+        const code = await exitWithin(p, STOP_BOUND_MS, 'service (signal after start)');
+        if (code !== 0) throw new Error(`service exited ${code}: ${await err.done}`);
+        expect(code).toBe(0);
+        openStore(location, STORE_SCHEMAS, 'existing').close();
+      } finally {
+        await m.close();
+        removeFolder(dir);
+      }
+    },
+    150_000,
+  );
+
+  test(
+    'mcp-http process',
+    async () => {
+      const { STORE_SCHEMAS, ANSWER_FAMILIES, ANSWER_CATALOGUE } = await starters();
+      const { openStore } = await db();
+      const { spawnProduct } = await spawn();
+
+      const dir = mkdtempSync(join(tmpdir(), 'arcanum-starters-http-'));
+      const empty = mkdtempSync(join(tmpdir(), 'arcanum-starters-http-none-'));
+      try {
+        // A store created with the service starter's one installer list.
+        const location = join(dir, 'arcanum.db');
+        openStore(location, STORE_SCHEMAS, 'create').close();
+        const port = freePort();
+
+        const p = spawnProduct(['mcp-http'], { ARCANUM_STORAGE: location, ARCANUM_MCP_PORT: String(port) }, process.env);
+        const err = watch(p.stderr);
+        void new Response(p.stdout).text();
+        try {
+          const listening = await err.waitFor(`assistant over HTTP listening on port ${port} at /mcp`, 10_000);
+          if (!listening) throw new Error(`mcp-http never listened: ${err.text()}`);
+
+          const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+            signal: AbortSignal.timeout(10_000),
+          });
+          expect(res.status).toBe(200);
+          const body: any = await res.json();
+          const names: string[] = body.result.tools.map((t: any) => t.name);
+          const expected = ANSWER_FAMILIES.map((f: any) => ANSWER_CATALOGUE.find((e: any) => e.family === f.name)!.tool);
+          expect(names.length).toBe(ANSWER_FAMILIES.length);
+          expect([...names].sort()).toEqual([...expected].sort());
+
+          // A termination signal: the one stop, exit 0 within the bound.
+          if (process.platform !== 'win32') {
+            p.signal('SIGTERM');
+            const code = await exitWithin(p, STOP_BOUND_MS, 'mcp-http');
+            if (code !== 0) throw new Error(`mcp-http exited ${code}: ${await err.done}`);
+            expect(code).toBe(0);
+          }
+        } finally {
+          // Windows delivers no termination signal a process can handle; there the child is ended.
+          p.signal('SIGKILL');
+        }
+
+        // No local copy: exit 1 naming the location, no listener, the folder stays empty.
+        const missing = join(empty, 'arcanum.db');
+        const port2 = freePort();
+        const p2 = spawnProduct(['mcp-http'], { ARCANUM_STORAGE: missing, ARCANUM_MCP_PORT: String(port2) }, process.env);
+        const err2 = watch(p2.stderr);
+        void new Response(p2.stdout).text();
+        expect(await exitWithin(p2, STOP_BOUND_MS, 'mcp-http (no local copy)')).toBe(1);
+        const errText = await err2.done;
+        expect(errText).toContain(missing);
+        expect(errText).not.toContain('listening');
+        expect(await listensOn(port2)).toBe(false);
+        expect(readdirSync(empty)).toEqual([]);
+      } finally {
+        removeFolder(dir);
+        removeFolder(empty);
       }
     },
     80_000,
