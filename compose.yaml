@@ -1,6 +1,10 @@
-# Container run definition (S-241): the background service with its store in one named volume,
-# Monobank settings passed from the host when set there (otherwise absent), and only the push
-# port published.
+# Container run definition (S-246), poll-only: the background service and the HTTP assistant
+# connection from one image, sharing the store in one named volume mounted read-write in both
+# (the store's write-ahead log needs its shared-memory file even to read). Monobank settings are
+# passed from the host when set there, otherwise absent; with no push address the service polls.
+# Neither service publishes a port and neither fixes a container name: other containers on the
+# compose network reach the assistant connection at http://arcanum-mcp:8090/mcp. For push, layer
+# compose.push.yaml on top with a second -f.
 services:
   arcanum:
     build: .
@@ -11,9 +15,19 @@ services:
       ARCANUM_MONOBANK_PUSH_SECRET:
     volumes:
       - arcanum-data:/data
-    ports:
-      - "8080:8080"
     restart: unless-stopped
+
+  arcanum-mcp:
+    build: .
+    command: ["bun", "src/app/bin.ts", "mcp-http"]
+    environment:
+      ARCANUM_STORAGE: /data/arcanum.db
+      ARCANUM_MCP_PORT:
+    volumes:
+      - arcanum-data:/data
+    restart: unless-stopped
+    depends_on:
+      - arcanum
 
 volumes:
   arcanum-data:
