@@ -1,4 +1,4 @@
-// Confinement over the real product (S-252, S-246): every .ts file under src/ passes scanProduct,
+// Confinement over the real product (S-254, S-246): every .ts file under src/ passes scanProduct,
 // and the floors hold, so no allowed pattern is dead and no scan passes by inspecting nothing.
 //
 // The module is imported inside the test, not at the top: a missing module then fails the test
@@ -25,7 +25,8 @@ describe('confinement/product', () => {
       listProductFiles,
       scanProduct,
       NETWORK_ALLOWED,
-      FILE_PROCESS_ALLOWED,
+      FILE_ALLOWED,
+      PROCESS_ALLOWED,
       SQLITE_ALLOWED,
       ENV_ALLOWED,
       RELEASE_IMPORT_ALLOWED,
@@ -46,10 +47,13 @@ describe('confinement/product', () => {
     expect(ids.some((id) => id.startsWith('release/'))).toBe(true);
 
     // 2. Every allowed pattern matches at least one listed file, so a list entry naming a module
-    // label instead of a path ('store/store' for src/db/index.ts) fails here.
-    const lists = [NETWORK_ALLOWED, FILE_PROCESS_ALLOWED, SQLITE_ALLOWED, ENV_ALLOWED, RELEASE_IMPORT_ALLOWED];
+    // label instead of a path ('store/store' for src/db/index.ts) fails here. The one exception is
+    // an entry naming a module a later unit builds (ruling of 2026-11-24): the HTTP assistant front
+    // end, which once src/interfaces/assistant-http.ts exists is matched like any other.
+    const later = ['interfaces/assistant-http'];
+    const lists = [NETWORK_ALLOWED, FILE_ALLOWED, PROCESS_ALLOWED, SQLITE_ALLOWED, ENV_ALLOWED, RELEASE_IMPORT_ALLOWED];
     const patterns = [...new Set(lists.flat())];
-    const dead = patterns.filter((p) => !ids.some((id) => matches(p, id)));
+    const dead = patterns.filter((p) => !later.includes(p) && !ids.some((id) => matches(p, id)));
     expect(dead).toEqual([]);
 
     // 3. At least one file lies outside every list.
@@ -58,5 +62,18 @@ describe('confinement/product', () => {
     // 4. No violation; on failure each one is listed.
     const v = scanProduct(files, DEV);
     expect(v.map((x) => `${x.moduleId} ${x.rule} ${JSON.stringify(x.match)} line ${x.line}`)).toEqual([]);
+
+    // Rule cases over literal files: the store's file allowance, the release check's whole process
+    // object and package.json import, and comments removed before matching.
+    const scan = (moduleId: string, text: string) => scanProduct([{ moduleId, text }], DEV);
+    const rules = (moduleId: string, text: string) => scan(moduleId, text).map((x) => x.rule);
+    expect(rules('db/index', "import { statSync } from 'node:fs'")).not.toContain('file');
+    expect(rules('db/index', "import { spawn } from 'node:child_process'")).toContain('process');
+    expect(scan('release/check', 'process.exit(1)')).toEqual([]);
+    expect(scan('release/judges', "import pkg from '../../package.json'")).toEqual([]);
+    expect(rules('sync/service', 'process.exit(1)')).toContain('env');
+    expect(scan('sync/service', '// we fetch nothing here')).toEqual([]);
+    expect(rules('sync/service', "const f = globalThis['fetch']")).toContain('network');
+    expect(scan('sync/service', '/* process.exit */')).toEqual([]);
   });
 });
