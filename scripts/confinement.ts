@@ -1,8 +1,8 @@
-// Confinement scan (S-211): reads every product module under src/ and reports each use of a
+// Confinement scan (S-254): reads every product module under src/ and reports each use of a
 // loader, network, file, process, database or environment facility, of test code, of a
 // development-only dependency or of the release-check part, outside the allowed lists below.
-// Test code: never imported by product code. Rules match the whole text, comments and strings
-// included.
+// Test code: never imported by product code. Comments are removed before matching; strings and
+// template literals are still matched.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
@@ -11,9 +11,10 @@ export interface ScanFile { moduleId: string; text: string } // moduleId: path u
 export type Rule = 'loader' | 'network' | 'file' | 'process' | 'sqlite' | 'env' | 'test-import' | 'dev-dependency' | 'release-import';
 export interface Violation { moduleId: string; rule: Rule; match: string; line: number } // line is 1-based
 
-export const NETWORK_ALLOWED: readonly string[] = ['sources/*/client', 'app/network', 'service/push-receiver', 'release/*'];
-export const FILE_PROCESS_ALLOWED: readonly string[] = ['release/*'];
-export const SQLITE_ALLOWED: readonly string[] = ['store/store'];
+export const NETWORK_ALLOWED: readonly string[] = ['sources/*/client', 'app/network', 'sync/push-receiver', 'interfaces/assistant-http', 'release/*'];
+export const FILE_ALLOWED: readonly string[] = ['release/*', 'db/index'];
+export const PROCESS_ALLOWED: readonly string[] = ['release/*'];
+export const SQLITE_ALLOWED: readonly string[] = ['db/index'];
 export const ENV_ALLOWED: readonly string[] = ['app/bin'];
 export const RELEASE_IMPORT_ALLOWED: readonly string[] = ['release/*', 'app/bin'];
 export const LOADER_TOKENS = ['require', 'createRequire', 'getBuiltinModule', 'eval', 'Function', 'dlopen'] as const;
@@ -136,6 +137,76 @@ function resolveRelative(moduleId: string, spec: string): string {
   return posix.normalize(posix.join('src', posix.dirname(moduleId), spec));
 }
 
+// The text with line comments and block comments blanked to spaces (newlines kept, so indices
+// and lines stay put). Quoted strings and template literals, `${...}` included, are kept.
+function stripComments(text: string): string {
+  const out = text.split('');
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n' && out[k] !== '\r') out[k] = ' ';
+  };
+  const braces: number[] = []; // per open `${`, the brace depth inside it
+  let i = 0;
+  const n = text.length;
+  const skipQuoted = (q: string): void => {
+    i++;
+    while (i < n && text[i] !== q && text[i] !== '\n') i += text[i] === '\\' ? 2 : 1;
+    i++;
+  };
+  // Inside a template literal: returns at its closing backtick or after an opening `${`.
+  const skipTemplate = (): void => {
+    while (i < n) {
+      const c = text[i];
+      if (c === '\\') i += 2;
+      else if (c === '`') { i++; return; }
+      else if (c === '$' && text[i + 1] === '{') { i += 2; braces.push(0); return; }
+      else i++;
+    }
+  };
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === '/' && d === '/') {
+      const end = text.indexOf('\n', i);
+      const stop = end === -1 ? n : end;
+      blank(i, stop);
+      i = stop;
+    } else if (c === '/' && d === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"') {
+      skipQuoted(c);
+    } else if (c === '`') {
+      i++;
+      skipTemplate();
+    } else if (c === '{' && braces.length > 0) {
+      braces[braces.length - 1]!++;
+      i++;
+    } else if (c === '}' && braces.length > 0) {
+      i++;
+      if (braces[braces.length - 1] === 0) { braces.pop(); skipTemplate(); }
+      else braces[braces.length - 1]!--;
+    } else {
+      i++;
+    }
+  }
+  return out.join('');
+}
+
+// The HTTP assistant front end may name the server module to listen, never anything outbound.
+const LISTEN_ONLY = 'interfaces/assistant-http';
+
+// Outbound routes in the listen-only module: fetch, connect, or an import of a source client.
+function outboundHits(moduleId: string, text: string, specs: readonly Specifier[]): Hit[] {
+  const hits: Hit[] = [...word(text, 'fetch'), ...word(text, 'connect')];
+  for (const s of specs) {
+    const p = isRelative(s.spec) ? resolveRelative(moduleId, s.spec).replace(/\.(ts|js)$/, '') : s.spec;
+    if (/(^|\/)src\/sources\/[^/]+\/client$/.test(p)) hits.push({ match: s.match, index: s.index });
+  }
+  return hits;
+}
+
 function loaderHits(text: string): Hit[] {
   const hits: Hit[] = LOADER_TOKENS.flatMap((t) => word(text, t));
   for (const m of all(text, /constructor\s*\.\s*constructor/)) hits.push({ match: m[0], index: m.index });
@@ -143,11 +214,12 @@ function loaderHits(text: string): Hit[] {
   return hits;
 }
 
-function envHits(text: string): Hit[] {
+// `anyMember`: a module in PROCESS_ALLOWED may use every member of the process object but env.
+function envHits(text: string, anyMember: boolean): Hit[] {
   const hits: Hit[] = [];
   for (const h of word(text, 'process')) {
     const m = memberAfter(text, h.index + h.match.length);
-    if (m !== null && (PROCESS_MEMBERS_ALLOWED as readonly string[]).includes(m)) continue;
+    if (m !== null && (anyMember ? m !== 'env' : (PROCESS_MEMBERS_ALLOWED as readonly string[]).includes(m))) continue;
     hits.push(m === null ? h : { match: `process.${m}`, index: h.index });
   }
   for (const h of word(text, 'Bun')) {
@@ -162,7 +234,9 @@ function envHits(text: string): Hit[] {
 
 export function scanProduct(files: readonly ScanFile[], devDependencies: readonly string[]): Violation[] {
   const out: Violation[] = [];
-  for (const { moduleId, text } of files) {
+  for (const file of files) {
+    const moduleId = file.moduleId;
+    const text = stripComments(file.text);
     const lineAt = (index: number): number => text.slice(0, index).split('\n').length;
     const add = (rule: Rule, hits: readonly Hit[]): void => {
       for (const h of [...hits].sort((a, b) => a.index - b.index)) {
@@ -175,12 +249,14 @@ export function scanProduct(files: readonly ScanFile[], devDependencies: readonl
 
     if (!allowed(NETWORK_ALLOWED, moduleId)) {
       add('network', [...NETWORK_TOKENS.flatMap((t) => word(text, t)), ...named(text, specs, NETWORK_SPECIFIERS)]);
+    } else if (moduleId === LISTEN_ONLY) {
+      add('network', outboundHits(moduleId, text, specs));
     }
 
-    if (!allowed(FILE_PROCESS_ALLOWED, moduleId)) {
-      add('file', [...named(text, specs, FILE_SPECIFIERS), ...bunMembers(text, BUN_FILE_MEMBERS)]);
-      add('process', [...named(text, specs, PROCESS_SPECIFIERS), ...bunMembers(text, BUN_PROCESS_MEMBERS)]);
-    }
+    const fileAllowed = allowed(FILE_ALLOWED, moduleId);
+    const processAllowed = allowed(PROCESS_ALLOWED, moduleId);
+    if (!fileAllowed) add('file', [...named(text, specs, FILE_SPECIFIERS), ...bunMembers(text, BUN_FILE_MEMBERS)]);
+    if (!processAllowed) add('process', [...named(text, specs, PROCESS_SPECIFIERS), ...bunMembers(text, BUN_PROCESS_MEMBERS)]);
 
     if (!allowed(SQLITE_ALLOWED, moduleId)) {
       const hits = named(text, specs, SQLITE_SPECIFIERS, true);
@@ -190,12 +266,14 @@ export function scanProduct(files: readonly ScanFile[], devDependencies: readonl
       add('sqlite', hits);
     }
 
-    if (!allowed(ENV_ALLOWED, moduleId)) add('env', envHits(text));
+    if (!allowed(ENV_ALLOWED, moduleId)) add('env', envHits(text, processAllowed));
 
+    // A module in FILE_ALLOWED may import the repository's package.json (a file read).
     add('test-import', specs.filter((s) => {
       if (s.spec === 'bun:test') return true;
       if (!isRelative(s.spec)) return false;
       const p = resolveRelative(moduleId, s.spec);
+      if (fileAllowed && p === 'package.json') return false;
       return !p.startsWith('src/');
     }));
 
