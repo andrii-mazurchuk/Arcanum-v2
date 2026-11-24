@@ -1,4 +1,4 @@
-// Confinement over the real product (S-211, S-241): every .ts file under src/ passes scanProduct,
+// Confinement over the real product (S-252, S-246): every .ts file under src/ passes scanProduct,
 // and the floors hold, so no allowed pattern is dead and no scan passes by inspecting nothing.
 //
 // The module is imported inside the test, not at the top: a missing module then fails the test
@@ -41,11 +41,12 @@ describe('confinement/product', () => {
       expect(id.endsWith('.ts')).toBe(false);
     }
     expect(ids).toContain('sources/monobank/client');
-    expect(ids).toContain('store/store');
+    expect(ids).toContain('db/index');
     expect(ids).toContain('app/bin');
     expect(ids.some((id) => id.startsWith('release/'))).toBe(true);
 
-    // 2. Every allowed pattern matches at least one listed file.
+    // 2. Every allowed pattern matches at least one listed file, so a list entry naming a module
+    // label instead of a path ('store/store' for src/db/index.ts) fails here.
     const lists = [NETWORK_ALLOWED, FILE_PROCESS_ALLOWED, SQLITE_ALLOWED, ENV_ALLOWED, RELEASE_IMPORT_ALLOWED];
     const patterns = [...new Set(lists.flat())];
     const dead = patterns.filter((p) => !ids.some((id) => matches(p, id)));

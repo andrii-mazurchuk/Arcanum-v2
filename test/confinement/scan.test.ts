@@ -1,4 +1,4 @@
-// Confinement scan (S-211): scanProduct over one fixture module at a time, asserting the exact
+// Confinement scan (S-252): scanProduct over one fixture module at a time, asserting the exact
 // set of rules it reports, from scripts/confinement.
 //
 // The module is imported inside each test, not at the top: a missing module then fails each
@@ -67,8 +67,8 @@ describe('confinement/scan', () => {
         // 1-3
         ['sources/monobank/client', "Bun.write('/tmp/x', s)", ['file']],
         ['sources/monobank/client', 'const p = Bun.fileURLToPath(u)', []],
-        ['service/push-receiver', "import { readFileSync } from 'fs'", ['file']],
-        ['service/push-receiver', "import x from 'node:fs/promises'", ['file']],
+        ['sync/push-receiver', "import { readFileSync } from 'fs'", ['file']],
+        ['sync/push-receiver', "import x from 'node:fs/promises'", ['file']],
         ['answer/x', "const k = 'node:fs'", ['file']],
         ['answer/x', "const k = 'fs'", []],
         // 4-5
@@ -85,7 +85,7 @@ describe('confinement/scan', () => {
         ['sync/log', 'const attachments = 1', []],
         ['sync/log', "import { DatabaseSync } from 'node:sqlite'", ['sqlite']],
         // 7
-        ['store/store', "import { Database } from 'bun:sqlite'", []],
+        ['db/index', "import { Database } from 'bun:sqlite'", []],
         // 8
         ['service/sync', "import { h } from '../../test/helpers'", ['test-import']],
         ['service/sync', "import { expect } from 'bun:test'", ['test-import']],
@@ -124,5 +124,24 @@ describe('confinement/scan', () => {
     expect(v[0]!.moduleId).toBe('service/sync');
     expect(v[0]!.rule).toBe('release-import');
     expect(v[0]!.line).toBe(3);
+  });
+
+  test('assistant-http allowance', async () => {
+    const { scanProduct } = await confinement();
+    const scan = (moduleId: string, text: string) => scanProduct([{ moduleId, text }], []);
+    const listen = "import { createServer } from 'node:http'";
+
+    // The HTTP front end may name the server module; the allowance is that one module only.
+    expect(scan('interfaces/assistant-http', listen).filter((x) => x.rule === 'network')).toEqual([]);
+    expect(scan('interfaces/assistant-entry', listen).some((x) => x.rule === 'network')).toBe(true);
+
+    // Listening only: no outbound call, no connect, no source client.
+    for (const text of [
+      'await fetch(u)',
+      "import { connect } from 'net'",
+      "import { monobankClient } from '../sources/monobank/client'",
+    ]) {
+      expect({ text, flagged: scan('interfaces/assistant-http', text).length > 0 }).toEqual({ text, flagged: true });
+    }
   });
 });
