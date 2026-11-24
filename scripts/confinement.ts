@@ -278,9 +278,12 @@ function outboundHits(moduleId: string, code: string, plain: string, specs: read
   }
   // No outbound HTTP client (iss-1758): no https or http2, no package but the protocol SDK, from
   // the HTTP module only createServer and types, and no request or get called on it.
-  hits.push(...named(plain, specs, ['https', 'http2']));
+  // 'undici' and 'ws' are named explicitly: the runtime may count them as built-in modules.
+  const clients = ['https', 'http2', 'undici', 'ws'];
+  hits.push(...named(plain, specs, clients));
   for (const s of specs) {
-    if (isRelative(s.spec) || s.spec.startsWith('node:') || s.spec.startsWith('bun:') || isBuiltin(s.spec)) continue;
+    if (isRelative(s.spec) || s.spec.startsWith('node:') || s.spec.startsWith('bun:') || clients.includes(s.spec)) continue;
+    if (isBuiltin(s.spec)) continue;
     if (s.spec === MCP_SDK || s.spec.startsWith(`${MCP_SDK}/`)) continue;
     hits.push({ match: s.match, index: s.index });
   }
