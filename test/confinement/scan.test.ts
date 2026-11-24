@@ -156,4 +156,26 @@ describe('confinement/scan', () => {
       expect({ text, flagged: scan('interfaces/assistant-http', text).length > 0 }).toEqual({ text, flagged: true });
     }
   });
+
+  test('assistant-http no outbound http client', async () => {
+    const { scanProduct } = await confinement();
+    const scan = (text: string) => scanProduct([{ moduleId: 'interfaces/assistant-http', text }], []);
+
+    // From the HTTP server module it may take createServer, and its one package is the MCP SDK.
+    expect(scan("import { createServer } from 'node:http'")).toEqual([]);
+    expect(scan("import { Server } from '@modelcontextprotocol/sdk/server/index.js'")).toEqual([]);
+
+    // No outbound HTTP client: no request/get from http, no https, http2 or third-party client.
+    for (const text of [
+      "import { request } from 'node:http'",
+      "import { get } from 'http'",
+      'http.request(u)',
+      'http.get(u)',
+      "import https from 'node:https'",
+      "import { connect } from 'node:http2'",
+      "import axios from 'axios'",
+    ]) {
+      expect({ text, flagged: scan(text).length > 0 }).toEqual({ text, flagged: true });
+    }
+  });
 });
