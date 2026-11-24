@@ -1,7 +1,8 @@
-// Entry logic (S-228): loads settings once from the groups it is handed, picks the command
+// Entry logic (S-249): loads settings once from the groups it is handed, picks the command
 // by its first word, runs the start gate itself only for the service, backfill and release-check
 // commands, and hands the record and the host variables to that command's starter. The assistant
-// and question commands go ungated to their front ends, which run their own gate after their parse.
+// (stdio and HTTP) and question commands go ungated to their front ends, which run their own gate
+// after their parse.
 // Only app/bin calls main; it alone reads the environment and the arguments.
 
 import type { SourceId } from '../core/primitives';
@@ -34,7 +35,7 @@ export interface StartContext {
 }
 export type CommandStarter = (ctx: StartContext) => Promise<number>; // resolves the command's exit code
 export interface Starters {
-  service: CommandStarter; assistant: CommandStarter; question: CommandStarter;
+  service: CommandStarter; assistant: CommandStarter; assistantHttp: CommandStarter; question: CommandStarter;
   backfill: CommandStarter; releaseCheck: CommandStarter;
 }
 
@@ -73,6 +74,10 @@ export async function main(
     }
     case 'mcp':
       dispatch = { gated: false, starter: starters.assistant, args: argv.slice(1) };
+      break;
+    case 'mcp-http':
+      // The HTTP assistant connection (S-248).
+      dispatch = { gated: false, starter: starters.assistantHttp, args: argv.slice(1) };
       break;
     default:
       // The question front end parses the whole argv and reports its own usage refusal.

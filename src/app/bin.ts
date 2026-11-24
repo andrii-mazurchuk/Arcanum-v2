@@ -1,4 +1,4 @@
-// Process entry executable (S-228): every product process starts here as `<word> ...`. The one
+// Process entry executable (S-249): every product process starts here as `<word> ...`. The one
 // product module that reads the process environment and arguments; everything else receives them
 // through main, settings as the record and host variables as ctx.host. It sets the exit code
 // rather than calling exit, so buffered output is flushed.
@@ -17,6 +17,7 @@ const product = (name: Exclude<keyof Starters, 'releaseCheck'>) =>
 const STARTERS: Starters = {
   service: product('service'),
   assistant: product('assistant'),
+  assistantHttp: product('assistantHttp'),
   question: product('question'),
   backfill: product('backfill'),
   releaseCheck: lazy(async () => (await import('../release/check')).releaseCheck),
