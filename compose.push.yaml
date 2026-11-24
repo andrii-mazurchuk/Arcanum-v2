@@ -1,0 +1,8 @@
+# Push override (S-246), used as `docker compose -f compose.yaml -f compose.push.yaml up`:
+# publishes the push receiver's port (pushPort's default) for the background service only.
+# Nothing else changes; the push address and secret arrive through the variables compose.yaml
+# already lists.
+services:
+  arcanum:
+    ports:
+      - "8080:8080"
