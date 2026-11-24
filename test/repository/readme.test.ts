@@ -1,9 +1,9 @@
-// The deployment manual (S-251): README.md at the repository root holds the five deployment
+// The deployment manual (S-258): README.md at the repository root holds the five deployment
 // sections in order; its Settings section names every setting the loader produces (S-244
 // settingNames over S-221 BUILT_GROUPS) and no other; the Assistant section names the /mcp
 // endpoint, the arcanum-mcp service and its port setting; the Deploy section names the push
-// override; the History section the backfill command; the Smoke test section the balance command;
-// and no token value is published anywhere in it.
+// override and the Monobank token every recreate needs; the History section the backfill command;
+// the Smoke test section the balance command; and no token value is published anywhere in it.
 //
 // The file and the modules are read inside the test, not at the top: a missing file or module then
 // fails the test on its own instead of failing the whole file at load.
@@ -61,7 +61,10 @@ describe('deployment manual', () => {
     expect(assistant).toContain('arcanum-mcp');
     expect(assistant).toContain('ARCANUM_MCP_PORT');
 
-    expect(section('Deploy')).toContain('compose.push.yaml');
+    // The push override, and the token every recreate needs from the host environment.
+    const deploy = section('Deploy');
+    expect(deploy).toContain('compose.push.yaml');
+    expect(deploy).toContain('ARCANUM_MONOBANK_TOKEN');
     expect(section('History')).toContain('backfill monobank');
     expect(section('Smoke test')).toContain('bin.ts balance');
 
