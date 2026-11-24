@@ -1,10 +1,11 @@
-// Confinement scan (S-255): reads every product module under src/ and reports each use of a
+// Confinement scan (S-256): reads every product module under src/ and reports each use of a
 // loader, network, file, process, database or environment facility, of test code, of a
 // development-only dependency or of the release-check part, outside the allowed lists below.
 // Test code: never imported by product code. Comments are removed before matching; inside a
 // string or template literal a token counts only as the literal's whole content.
 
 import { readdirSync, readFileSync } from 'node:fs';
+import { isBuiltin } from 'node:module';
 import { join, posix } from 'node:path';
 
 export interface ScanFile { moduleId: string; text: string } // moduleId: path under src/ without '.ts', '/' separated
@@ -275,6 +276,38 @@ function outboundHits(moduleId: string, code: string, plain: string, specs: read
     const p = isRelative(s.spec) ? resolveRelative(moduleId, s.spec) : s.spec;
     if (/(^|\/)src\/sources(\/|$)/.test(p)) hits.push({ match: s.match, index: s.index });
   }
+  // No outbound HTTP client (iss-1758): no https or http2, no package but the protocol SDK, from
+  // the HTTP module only createServer and types, and no request or get called on it.
+  // 'undici' and 'ws' are named explicitly: the runtime may count them as built-in modules.
+  const clients = ['https', 'http2', 'undici', 'ws'];
+  hits.push(...named(plain, specs, clients));
+  for (const s of specs) {
+    if (isRelative(s.spec) || s.spec.startsWith('node:') || s.spec.startsWith('bun:') || clients.includes(s.spec)) continue;
+    if (isBuiltin(s.spec)) continue;
+    if (s.spec === MCP_SDK || s.spec.startsWith(`${MCP_SDK}/`)) continue;
+    hits.push({ match: s.match, index: s.index });
+  }
+  hits.push(...httpImportHits(plain));
+  for (const m of all(code, /\bhttps?\s*\.\s*(request|get)\s*\(/)) hits.push({ match: m[0], index: m.index });
+  return hits;
+}
+
+const MCP_SDK = '@modelcontextprotocol/sdk';
+
+// Imports from 'http' / 'node:http' that bring in anything but createServer and types: a default
+// or namespace binding, a named binding other than createServer, or a dynamic import.
+function httpImportHits(plain: string): Hit[] {
+  const hits: Hit[] = [];
+  const re = /\b(import|export)\s+(type\s+)?([^'";]*?)\s*\bfrom\s*(['"])(node:)?http\4/;
+  for (const m of all(plain, re)) {
+    if (m[2]) continue;
+    const clause = m[3]!.trim();
+    const braced = /^\{([^}]*)\}$/.exec(clause);
+    const names = braced ? braced[1]!.split(',').map((x) => x.trim()).filter((x) => x !== '') : null;
+    const ok = names !== null && names.every((x) => x.startsWith('type ') || /^createServer(\s+as\s+[\w$]+)?$/.test(x));
+    if (!ok) hits.push({ match: m[0], index: m.index });
+  }
+  for (const m of all(plain, /\bimport\s*\(\s*(['"])(node:)?http\1/)) hits.push({ match: m[0], index: m.index });
   return hits;
 }
 
