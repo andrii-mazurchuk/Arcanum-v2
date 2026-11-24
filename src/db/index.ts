@@ -1,9 +1,9 @@
-// Store (S-242): the one gateway to the local copy. One process-wide store, opened creating or
+// Store (S-257): the one gateway to the local copy. One process-wide store, opened creating or
 // existing-only, with every table installer in one write; synchronous read-only snapshots; whole
 // immediate write transactions; storage positions claimed inside the storing write; register rows;
 // the per-transaction listed mark and the store-held ask claim.
 
-import { Database } from 'bun:sqlite';
+import { constants, Database, type Statement } from 'bun:sqlite';
 import { statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { CurrencyCode, HoldingId, Instant, Position, SourceId } from '../core/primitives';
@@ -67,7 +67,7 @@ export interface Store {
   readonly location: string;
   readSnapshot<T>(body: (snap: Snapshot) => T): T; // one read-only transaction around body; body is synchronous
   write<T>(body: (tx: WriteTx) => T): T; // one whole write transaction; rolled back if body throws; on a file store, durable when it returns
-  close(): void;
+  close(): void; // synchronous: finalises every statement this store prepared, then closes the connection (bun:sqlite close(true)); when it returns, the process holds no handle on the location
 }
 
 export interface AskClaim {
@@ -235,6 +235,22 @@ export function openStore(
     throw new StoreLocationError(location, 'cannot open');
   }
 
+  // bun:sqlite finalises only its cached statements (db.query's first 20 texts) on close, and a
+  // dropped statement is not finalised when collected, so every other statement prepared on this
+  // connection (by the store or by a slice through snap.db or tx.db) is held here and finalised
+  // when the transaction it was prepared in ends, and at close.
+  const prepared = new Set<Statement>();
+  const prepare = db.prepare.bind(db);
+  db.prepare = ((...args: Parameters<Database['prepare']>) => {
+    const stmt = prepare(...args);
+    if ((args as unknown[])[2] !== constants.SQLITE_PREPARE_PERSISTENT) prepared.add(stmt);
+    return stmt;
+  }) as Database['prepare'];
+  const finalizePrepared = (): void => {
+    for (const stmt of prepared) stmt.finalize();
+    prepared.clear();
+  };
+
   if (isFile) {
     try {
       db.run('PRAGMA journal_mode = WAL');
@@ -262,9 +278,11 @@ export function openStore(
     } catch {
       // the transaction is already gone
     }
+    finalizePrepared();
     db.close();
     throw new StoreSchemaError(location, e);
   }
+  finalizePrepared();
 
   const snap: Snapshot = {
     db,
@@ -327,6 +345,7 @@ export function openStore(
     },
   };
 
+  let closed = false;
   return {
     location,
     readSnapshot<T>(body: (snap: Snapshot) => T): T {
@@ -336,6 +355,7 @@ export function openStore(
         db.run('PRAGMA query_only = ON');
         result = body(snap);
       } finally {
+        finalizePrepared();
         try {
           db.run('COMMIT');
         } finally {
@@ -354,9 +374,11 @@ export function openStore(
       try {
         result = body(tx);
       } catch (e) {
+        finalizePrepared();
         db.run('ROLLBACK');
         throw e;
       }
+      finalizePrepared();
       try {
         db.run('COMMIT');
       } catch (e) {
@@ -365,8 +387,13 @@ export function openStore(
       }
       return result;
     },
+    // Synchronous: finalises every statement prepared on the connection (bun:sqlite finalises the
+    // cached ones itself), then close(true) closes it or throws, so no handle on the location remains.
     close() {
-      db.close();
+      if (closed) return;
+      finalizePrepared();
+      db.close(true);
+      closed = true;
     },
   };
 }
