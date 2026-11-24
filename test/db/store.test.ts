@@ -1,6 +1,6 @@
-// Store (S-242): storage positions claimed inside the storing write, synchronous read-only
+// Store (S-257): storage positions claimed inside the storing write, synchronous read-only
 // snapshots, file and memory locations, rateInstant, register rows, the per-transaction listed
-// mark and the store-held ask claim, from src/db/index.
+// mark, the store-held ask claim and a close that releases the location at once, from src/db/index.
 //
 // The module is imported inside each test, not at the top: a missing module then fails each test
 // on its own instead of failing the whole file at load.
@@ -379,4 +379,68 @@ describe('store/store', () => {
       rmSync(empty, { recursive: true, force: true });
     }
   }, 30000);
+
+  test('close releases the location at once', async () => {
+    const { openStore } = await store();
+    const { Database } = await import('bun:sqlite');
+    // Every table installer, as the product's one list (src/app/starters STORE_SCHEMAS) names them,
+    // imported from the table owners so the store's test does not load the front ends.
+    const STORE_SCHEMAS = [
+      (await import('../../src/money/recorded-rates')).ensureRateSchema,
+      (await import('../../src/money/quarantine')).ensureQuarantineSchema,
+      (await import('../../src/local/covered')).ensureCoverageSchema,
+      (await import('../../src/local/transactions')).ensureTransactionSchema,
+      (await import('../../src/sync/balances')).ensureBalanceSchema,
+      (await import('../../src/sync/rate-gate')).ensureRateLedgerSchema,
+      (await import('../../src/sync/progress')).ensureFirstFillSchema,
+    ];
+
+    for (let run = 1; run <= 50; run++) {
+      const dir = mkdtempSync(join(tmpdir(), 'arcanum-store-'));
+      const path = join(dir, 'copy.sqlite');
+      try {
+        const s = openStore(path, STORE_SCHEMAS);
+
+        // Reads and a write, so the store has statements cached.
+        s.write((tx) => {
+          tx.registerSource({ id: 'monobank', capabilities: [] } as any);
+          tx.registerHolding({ kind: 'jar', sourceId: 'monobank', bankId: 'J1', currency: 'UAH' } as any);
+          tx.claimPosition();
+          tx.claimPosition();
+          tx.takeClaim(F, `t${run}`, 0, 1000);
+          return tx.releaseClaim(F, `t${run}`, [1]);
+        });
+        for (let i = 0; i < 3; i++) {
+          s.readSnapshot((snap) => [snap.position(), snap.register(), snap.isListed(1), snap.claim(F)]);
+        }
+
+        s.close();
+
+        // Another connection, no busy wait: the journal change and the exclusive lock succeed at once.
+        const raw = new Database(path);
+        try {
+          let failure: unknown;
+          try {
+            raw.run('PRAGMA journal_mode = DELETE');
+            raw.run('BEGIN EXCLUSIVE');
+            raw.run('COMMIT');
+          } catch (e) {
+            failure = e;
+          }
+          expect({ run, failure: failure === undefined ? undefined : String(failure) }).toEqual({
+            run,
+            failure: undefined,
+          });
+          expect(raw.query('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
+        } finally {
+          raw.close();
+        }
+
+        // A second close does nothing.
+        expect(() => s.close()).not.toThrow();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 60000);
 });
