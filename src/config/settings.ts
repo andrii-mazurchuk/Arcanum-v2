@@ -1,4 +1,4 @@
-// Settings (S-212): the only parser of setting values and the only place defaults are applied.
+// Settings (S-244): the only parser of setting values and the only place defaults are applied.
 // loadSettings is total over the environment and the source groups it is handed, and returns one
 // deep-frozen record in four states per setting. Every other part receives the record (or a value
 // taken from it) and never reads the environment. This module keeps no list of sources.
@@ -28,6 +28,7 @@ export interface SharedSettings {
   pollMinutes: SettingState<number>; // ARCANUM_POLL_MINUTES
   pushPort: SettingState<number>; // ARCANUM_PUSH_PORT
   timeZone: SettingState<string>; // ARCANUM_TIME_ZONE
+  mcpPort: SettingState<number>; // ARCANUM_MCP_PORT
 }
 export const SHARED_NAMES: { readonly [K in keyof SharedSettings]: string } = Object.freeze({
   storage: 'ARCANUM_STORAGE',
@@ -35,6 +36,7 @@ export const SHARED_NAMES: { readonly [K in keyof SharedSettings]: string } = Ob
   pollMinutes: 'ARCANUM_POLL_MINUTES',
   pushPort: 'ARCANUM_PUSH_PORT',
   timeZone: 'ARCANUM_TIME_ZONE',
+  mcpPort: 'ARCANUM_MCP_PORT',
 });
 
 export interface SourceSettingsGroup {
@@ -154,6 +156,7 @@ export function loadSettings(env: Env, groups: readonly SourceSettingsGroup[]): 
     pollMinutes: load(env, SHARED_NAMES.pollMinutes, wholeNumber(1, Number.MAX_SAFE_INTEGER), 60),
     pushPort: load(env, SHARED_NAMES.pushPort, wholeNumber(0, 65535), 8080),
     timeZone: load(env, SHARED_NAMES.timeZone, parseTimeZone, DEFAULT_TIME_ZONE),
+    mcpPort: load(env, SHARED_NAMES.mcpPort, wholeNumber(1, 65535), 8090),
   };
   return deepFreeze({ shared, sources: groups.map((g) => loadSource(env, g)) });
 }
