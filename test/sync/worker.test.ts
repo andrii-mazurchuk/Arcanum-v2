@@ -299,7 +299,7 @@ describe('sync/worker', () => {
         linesAtResolution = [...a.lines];
       });
       expect(await within(observed, 2000)).toBe('resolved');
-      expect(busyAtResolution).toBe(false);
+      expect<any>(busyAtResolution).toBe(false);
       expect(linesAtResolution).toContain('sync first_fill source=stub status=stopped steps=0 added=0');
 
       // 4. A stale timer callback runs nothing after stop.

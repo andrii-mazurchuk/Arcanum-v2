@@ -111,8 +111,8 @@ describe('local/pairing', () => {
       mv('i1', B, at('12:05:00'), 10000n),
     ];
     const expected = [{ kind: 'pair', tier: 3, out: key('z1'), in: key('i1'), outHolding: A, inHolding: B }];
-    expect(plan(case2)).toEqual(expected);
-    expect(plan([...case2].reverse())).toEqual(expected);
+    expect<any>(plan(case2)).toEqual(expected);
+    expect<any>(plan([...case2].reverse())).toEqual(expected);
   });
 
   test('links, one-sided and completion', async () => {

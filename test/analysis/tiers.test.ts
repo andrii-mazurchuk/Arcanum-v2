@@ -25,7 +25,7 @@ describe('analysis/tiers', () => {
       [0n, null],
     ];
     for (const [x, want] of table) {
-      expect(tierOf(x, 400n, 4)).toBe(want);
+      expect<any>(tierOf(x, 400n, 4)).toBe(want);
     }
 
     // n = 3, months 300, 0, 0: S = 300.

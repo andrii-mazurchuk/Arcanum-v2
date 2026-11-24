@@ -69,7 +69,7 @@ describe('families/movement', () => {
       [{ amount: uah(25000n), category: G, description: 'ВИПЛАТА ДИВІДЕНДІВ' }, 'income'],
     ];
     table.forEach(([row, kind], i) => {
-      expect([i + 1, classifyMovement(facts(row) as never)]).toEqual([i + 1, kind]);
+      expect<any>([i + 1, classifyMovement(facts(row) as never)]).toEqual([i + 1, kind]);
     });
 
     expect(incomeThreshold('UAH' as never)).toBe(5000000n);
@@ -102,7 +102,7 @@ describe('families/movement', () => {
       [{ amount: uah(1550n), category: U, description: 'x', cashback: money(1550n, 'USD') }, 'other_incoming'],
     ];
     table.forEach(([row, kind], i) => {
-      expect([i + 1, classifyMovement(facts(row) as never)]).toEqual([i + 1, kind]);
+      expect<any>([i + 1, classifyMovement(facts(row) as never)]).toEqual([i + 1, kind]);
     });
   });
 });

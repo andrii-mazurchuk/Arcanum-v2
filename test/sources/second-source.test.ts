@@ -96,9 +96,9 @@ describe('sources/second/source', () => {
 
     // A translation scaling every currency by 100 gives c 500n; one reading the wall time as UTC
     // gives occurredAt two hours late.
-    expect(r.items[0]).toEqual(held('a', { minor: -1235n, currency: 'PLN' }, null));
-    expect(r.items[1]).toEqual(held('b', { minor: -10n, currency: 'UAH' }, null));
-    expect(r.items[2]).toEqual(held('c', { minor: 5n, currency: 'JPY' }, null));
+    expect<any>(r.items[0]).toEqual(held('a', { minor: -1235n, currency: 'PLN' }, null));
+    expect<any>(r.items[1]).toEqual(held('b', { minor: -10n, currency: 'UAH' }, null));
+    expect<any>(r.items[2]).toEqual(held('c', { minor: 5n, currency: 'JPY' }, null));
 
     // Excess precision is quarantined with its own moment, never rounded to -124n or -123n.
     const d: any = r.items[3];
@@ -119,7 +119,7 @@ describe('sources/second/source', () => {
       occurredAt: MOMENT,
     });
 
-    expect(r.items[4]).toEqual(held('e', { minor: -277n, currency: 'EUR' }, { minor: -301n, currency: 'USD' }));
+    expect<any>(r.items[4]).toEqual(held('e', { minor: -277n, currency: 'EUR' }, { minor: -301n, currency: 'USD' }));
 
     // An original of the opposite sign is malformed, naming both figures.
     const f: any = r.items[5];

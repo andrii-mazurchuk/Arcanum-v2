@@ -41,7 +41,7 @@ describe('money/money', () => {
       const result = parseMinorUnits(text, currency);
       expect({ text, currency, ok: result.ok }).toEqual({ text, currency, ok: false });
       if (result.ok) continue;
-      expect({ text, currency, reason: result.reason }).toEqual({ text, currency, reason });
+      expect<any>({ text, currency, reason: result.reason }).toEqual({ text, currency, reason });
       expect(result.detail).toContain(text);
       expect(result.detail).toContain(currency);
     }

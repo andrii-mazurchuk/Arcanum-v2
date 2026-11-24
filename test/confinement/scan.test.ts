@@ -15,7 +15,7 @@ async function expectRules(cases: Case[], dev: readonly string[]): Promise<void>
   for (const [moduleId, text, rules] of cases) {
     const v = scanProduct([{ moduleId, text }], dev);
     const got = [...new Set(v.map((x) => x.rule))].sort();
-    expect({ moduleId, text, rules: got }).toEqual({ moduleId, text, rules: [...rules].sort() });
+    expect<any>({ moduleId, text, rules: got }).toEqual({ moduleId, text, rules: [...rules].sort() });
     for (const x of v) expect(x.moduleId).toBe(moduleId);
   }
 }

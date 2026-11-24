@@ -134,8 +134,8 @@ describe('composeAnswering', () => {
 
     // 5.
     const r = await c.core.serve({ asker: 'command_line', family: 'probe_table', options: {} }, render, channel());
-    expect(r.answer.outcome).toEqual({ kind: 'answered', body: { rows: 1, position: 1 } });
-    expect(r.answer.statements).toEqual({ k: 'K' });
+    expect((r.answer as any).outcome).toEqual({ kind: 'answered', body: { rows: 1, position: 1 } });
+    expect((r.answer as any).statements).toEqual({ k: 'K' });
 
     // 6.
     expect(opens.length).toBe(1);

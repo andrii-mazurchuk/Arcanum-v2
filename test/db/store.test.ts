@@ -351,7 +351,7 @@ describe('store/store', () => {
       expect(caught).toBeUndefined();
 
       const s = opened!;
-      expect(s.readSnapshot((snap) => snap.register().holdings)).toEqual([
+      expect((s as any).readSnapshot((snap: any) => snap.register().holdings)).toEqual([
         { id: 'monobank:jar:J1', kind: 'jar', sourceId: 'monobank', bankId: 'J1', currency: 'UAH' },
       ] as any);
 
