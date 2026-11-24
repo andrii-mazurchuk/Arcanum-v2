@@ -1,4 +1,4 @@
-// Pinned-Bun check (S-241): checkPinnedBun is ok only for an exact engines.bun equal byte for byte
+// Pinned-Bun check (S-246): checkPinnedBun is ok only for an exact engines.bun equal byte for byte
 // to the running version, and the check:bun script run during the image build exits 1 on a
 // mismatch, so an image whose Bun differs from the pin fails to build.
 //
