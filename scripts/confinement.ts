@@ -1,4 +1,4 @@
-// Confinement scan (S-211): reads every product module under src/ and reports each use of a
+// Confinement scan (S-252): reads every product module under src/ and reports each use of a
 // loader, network, file, process, database or environment facility, of test code, of a
 // development-only dependency or of the release-check part, outside the allowed lists below.
 // Test code: never imported by product code. Rules match the whole text, comments and strings
@@ -11,9 +11,9 @@ export interface ScanFile { moduleId: string; text: string } // moduleId: path u
 export type Rule = 'loader' | 'network' | 'file' | 'process' | 'sqlite' | 'env' | 'test-import' | 'dev-dependency' | 'release-import';
 export interface Violation { moduleId: string; rule: Rule; match: string; line: number } // line is 1-based
 
-export const NETWORK_ALLOWED: readonly string[] = ['sources/*/client', 'app/network', 'service/push-receiver', 'release/*'];
+export const NETWORK_ALLOWED: readonly string[] = ['sources/*/client', 'app/network', 'sync/push-receiver', 'interfaces/assistant-http', 'release/*'];
 export const FILE_PROCESS_ALLOWED: readonly string[] = ['release/*'];
-export const SQLITE_ALLOWED: readonly string[] = ['store/store'];
+export const SQLITE_ALLOWED: readonly string[] = ['db/index'];
 export const ENV_ALLOWED: readonly string[] = ['app/bin'];
 export const RELEASE_IMPORT_ALLOWED: readonly string[] = ['release/*', 'app/bin'];
 export const LOADER_TOKENS = ['require', 'createRequire', 'getBuiltinModule', 'eval', 'Function', 'dlopen'] as const;
@@ -136,6 +136,19 @@ function resolveRelative(moduleId: string, spec: string): string {
   return posix.normalize(posix.join('src', posix.dirname(moduleId), spec));
 }
 
+// The HTTP assistant front end may name the server module to listen, never anything outbound.
+const LISTEN_ONLY = 'interfaces/assistant-http';
+
+// Outbound routes in the listen-only module: fetch, connect, or an import of a source client.
+function outboundHits(moduleId: string, text: string, specs: readonly Specifier[]): Hit[] {
+  const hits: Hit[] = [...word(text, 'fetch'), ...word(text, 'connect')];
+  for (const s of specs) {
+    const p = isRelative(s.spec) ? resolveRelative(moduleId, s.spec).replace(/\.(ts|js)$/, '') : s.spec;
+    if (/(^|\/)src\/sources\/[^/]+\/client$/.test(p)) hits.push({ match: s.match, index: s.index });
+  }
+  return hits;
+}
+
 function loaderHits(text: string): Hit[] {
   const hits: Hit[] = LOADER_TOKENS.flatMap((t) => word(text, t));
   for (const m of all(text, /constructor\s*\.\s*constructor/)) hits.push({ match: m[0], index: m.index });
@@ -175,6 +188,8 @@ export function scanProduct(files: readonly ScanFile[], devDependencies: readonl
 
     if (!allowed(NETWORK_ALLOWED, moduleId)) {
       add('network', [...NETWORK_TOKENS.flatMap((t) => word(text, t)), ...named(text, specs, NETWORK_SPECIFIERS)]);
+    } else if (moduleId === LISTEN_ONLY) {
+      add('network', outboundHits(moduleId, text, specs));
     }
 
     if (!allowed(FILE_PROCESS_ALLOWED, moduleId)) {
