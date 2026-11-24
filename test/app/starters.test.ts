@@ -276,10 +276,14 @@ describe('app/starters', () => {
           ARCANUM_PUSH_PORT: '0',
         };
 
-        // Signalled as soon as the pid is known, before any stderr line.
-        const earlyRun = async (what: string): Promise<number> => {
-          const p = spawnProduct(['service'], config, process.env);
+        // T-408 (iss-1759): a signal before the runtime runs any instruction cannot be observed, so the
+        // early window opens when the starter composes and creates the store (after the latch, before
+        // runService attaches). Poll every 1 ms, at most 10 s, until <folder>/a.db exists, then signal at once.
+        const earlyRun = async (what: string, at: string = location): Promise<number> => {
+          const p = spawnProduct(['service'], { ...config, ARCANUM_STORAGE: at }, process.env);
           expect(p.pid).toBeGreaterThan(0);
+          const until = Date.now() + 10_000;
+          while (!existsSync(at) && Date.now() < until) await Bun.sleep(1);
           p.signal('SIGTERM');
           const err = watch(p.stderr);
           void new Response(p.stdout).text();
@@ -297,9 +301,16 @@ describe('app/starters', () => {
           if (!(e instanceof NoLocalCopyError)) throw e;
         }
 
-        // 2. Ten in a row, no delay: every one exits 0.
+        // 2. Ten in a row, each in a fresh folder: every one exits 0.
         const codes: number[] = [];
-        for (let i = 0; i < 10; i++) codes.push(await earlyRun(`service (early signal ${i + 1})`));
+        for (let i = 0; i < 10; i++) {
+          const fresh = mkdtempSync(join(tmpdir(), 'arcanum-starters-early-rep-'));
+          try {
+            codes.push(await earlyRun(`service (early signal ${i + 1})`, join(fresh, 'a.db')));
+          } finally {
+            removeFolder(fresh);
+          }
+        }
         expect(codes).toEqual(Array(10).fill(0));
 
         // 3. After 'service started': one stop sequence, exit 0; a second signal during it changes nothing.
